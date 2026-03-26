@@ -1,0 +1,9 @@
+# Ambientes Virtuais
+.venv/
+__pycache__/
+.ipynb_checkpoints/
+
+# Dados (A regra de ouro: dados ficam no seu PC, não no Git)
+data/raw/
+data/processed/
+*.csv
