@@ -90,7 +90,7 @@ Chemistry variables are also included for player pairs:
    - Seasonal revenues
    - Wage/signing-related component
 3. Squad size bounds (min/max)
-4. Tactical formation bounds by position group (GK/DEF/MID/FWD)
+4. Tactical formation bounds by configurable position groups (e.g., GK/CB/RB/LB/CM/RW/LW/ST)
 5. Exactly 11 starters per window
 6. Starter eligibility: $y_{j,t} \le x_{j,t}$
 7. Buy/sell exclusivity in a window
@@ -123,7 +123,7 @@ All key weights and many constraints are configurable in `config/experiment.toml
 - Removes duplicated players by `player_id`
 - Removes Brazilian league duplicates from base source to prefer curated rows
 - Computes age from DOB
-- Maps positions to tactical groups (`GK`, `DEF`, `MID`, `FWD`)
+- Maps positions to granular tactical groups (`GK`, `CB`, `RB`, `LB`, `CM`, `RW`, `LW`, `ST`)
 - Handles missing values (value, IR, club name)
 
 ### 2. Deterministic Projections
