@@ -13,10 +13,145 @@ include("src/data_loader.jl")
 include("src/model.jl")
 
 # --- 2. Configuration ---
-# You can change these values here without touching the internal logic
-NUM_WINDOWS = 6  # 3 years of simulation (2 windows per year)
+# You can change experiment parameters in config/experiment.toml
+const DEFAULT_EXPERIMENT_CONFIG_PATH = "config/experiment.toml"
 
-function run_pipeline()
+struct ExperimentConfig
+    num_windows::Int
+    initial_squad_strategy::String
+    model_params::ModelParameters
+end
+
+"""
+    _parse_formation(formation_cfg::Dict{String,Any})
+
+Parses formation limits from TOML into Dict{String, Tuple{Int, Int}}.
+Expected format: GK = [1, 1], DEF = [3, 5], MID = [3, 5], FWD = [1, 3].
+"""
+function _parse_formation(formation_cfg::Dict{String,Any})
+    required_positions = ["GK", "DEF", "MID", "FWD"]
+    formation = Dict{String, Tuple{Int, Int}}()
+
+    for pos in required_positions
+        if !haskey(formation_cfg, pos)
+            error("Missing formation entry for '$pos' in experiment config.")
+        end
+
+        raw_range = formation_cfg[pos]
+        if !(raw_range isa Vector) || length(raw_range) != 2
+            error("Formation '$pos' must be an array with exactly 2 values: [min, max].")
+        end
+
+        minv = Int(raw_range[1])
+        maxv = Int(raw_range[2])
+        if minv < 0 || maxv < minv
+            error("Invalid formation range for '$pos': [$minv, $maxv].")
+        end
+        formation[pos] = (minv, maxv)
+    end
+
+    return formation
+end
+
+"""
+    load_experiment_config(config_path::String=DEFAULT_EXPERIMENT_CONFIG_PATH)
+
+Loads experiment settings from TOML and validates key constraints.
+"""
+function load_experiment_config(config_path::String=DEFAULT_EXPERIMENT_CONFIG_PATH)
+    if !isfile(config_path)
+        error("Experiment config not found at '$config_path'.")
+    end
+
+    cfg = TOML.parsefile(config_path)
+
+    sim_cfg = get(cfg, "simulation", Dict{String,Any}())
+    opt_cfg = get(cfg, "optimization", Dict{String,Any}())
+    constraints_cfg = get(cfg, "constraints", Dict{String,Any}())
+    formation_cfg = get(cfg, "formation", Dict{String,Any}())
+    objective_cfg = get(cfg, "objective", Dict{String,Any}())
+
+    num_windows = Int(get(sim_cfg, "num_windows", 4))
+    if num_windows < 1
+        error("simulation.num_windows must be >= 1.")
+    end
+
+    initial_budget = Float64(get(opt_cfg, "initial_budget", 150e6))
+    seasonal_revenue = Float64(get(opt_cfg, "seasonal_revenue", 50e6))
+    initial_squad_strategy = String(get(opt_cfg, "initial_squad_strategy", "top_value"))
+
+    max_squad_size = Int(get(constraints_cfg, "max_squad_size", 30))
+    min_squad_size = Int(get(constraints_cfg, "min_squad_size", 18))
+    friction_penalty = Float64(get(constraints_cfg, "friction_penalty", 1.5))
+    transaction_cost_buy = Float64(get(constraints_cfg, "transaction_cost_buy", 0.12))
+    transaction_cost_sell = Float64(get(constraints_cfg, "transaction_cost_sell", 0.10))
+    signing_bonus_rate = Float64(get(constraints_cfg, "signing_bonus_rate", 0.5))
+
+    if min_squad_size > max_squad_size
+        error("constraints.min_squad_size cannot be greater than constraints.max_squad_size.")
+    end
+    if initial_budget <= 0
+        error("optimization.initial_budget must be > 0.")
+    end
+    if seasonal_revenue < 0
+        error("optimization.seasonal_revenue must be >= 0.")
+    end
+
+    formation = _parse_formation(formation_cfg)
+
+    weight_quality = Float64(get(objective_cfg, "weight_quality", 0.80))
+    weight_potential = Float64(get(objective_cfg, "weight_potential", 0.15))
+    decay_quimica = Float64(get(objective_cfg, "decay_quimica", 0.70))
+    peso_asset = Float64(get(objective_cfg, "peso_asset", 0.2))
+    peso_performance = Float64(get(objective_cfg, "peso_performance", 1.0))
+    bonus_entrosamento = Float64(get(objective_cfg, "bonus_entrosamento", 2.0))
+    risk_appetite = Float64(get(objective_cfg, "risk_appetite", 1.0))
+
+    model_params = ModelParameters(
+        initial_budget = initial_budget,
+        seasonal_revenue = seasonal_revenue,
+        max_squad_size = max_squad_size,
+        min_squad_size = min_squad_size,
+        friction_penalty = friction_penalty,
+        transaction_cost_buy = transaction_cost_buy,
+        transaction_cost_sell = transaction_cost_sell,
+        signing_bonus_rate = signing_bonus_rate,
+        formation = formation,
+        weight_quality = weight_quality,
+        weight_potential = weight_potential,
+        decay_quimica = decay_quimica,
+        peso_asset = peso_asset,
+        peso_performance = peso_performance,
+        bonus_entrosamento = bonus_entrosamento,
+        risk_appetite = risk_appetite
+    )
+
+    println("🧪 Loaded experiment config: $config_path")
+    println("   Windows: $num_windows")
+    println("   Initial strategy: $initial_squad_strategy")
+    println("   Budget: €$(round(initial_budget/1e6, digits=1))M | Seasonal revenue: €$(round(seasonal_revenue/1e6, digits=1))M")
+
+    return ExperimentConfig(num_windows, initial_squad_strategy, model_params)
+end
+
+"""
+    get_experiment_config_path(args::Vector{String})
+
+Reads optional CLI arg: --config <path>
+"""
+function get_experiment_config_path(args::Vector{String})
+    for i in 1:length(args)
+        if args[i] == "--config"
+            if i == length(args)
+                error("Missing value after --config.")
+            end
+            return args[i + 1]
+        end
+    end
+    return DEFAULT_EXPERIMENT_CONFIG_PATH
+end
+
+function run_pipeline(num_windows::Int)
     println("🚀 Starting PSR Squad Optimization Pipeline...")
     println("="^50)
 
@@ -24,16 +159,16 @@ function run_pipeline()
     df = load_and_clean_data()
 
     # STEP 2: Projections (Deterministic Logic)
-    ovr_map, value_map = generate_projections(df, NUM_WINDOWS)
+    ovr_map, value_map, growth_potential_map = generate_projections(df, num_windows)
 
     # STEP 3: Market Reputation (Acquisition Costs)
-    cost_map = generate_cost_map(df, value_map, NUM_WINDOWS)
+    cost_map = generate_cost_map(df, value_map, num_windows)
 
     # STEP 5: Wage Map
-    wage_map = generate_wage_map(df, ovr_map, NUM_WINDOWS)
+    wage_map = generate_wage_map(df, ovr_map, num_windows)
 
     # STEP 6: Unified Analytical Export
-    export_analysis(df, ovr_map, value_map, cost_map, NUM_WINDOWS)
+    export_analysis(df, ovr_map, value_map, cost_map, num_windows)
 
     println("="^50)
     println("✅ Pipeline finished! Master report saved in 'data/processed/master_audit.csv'.")
@@ -60,7 +195,8 @@ function run_optimization(df::DataFrame, ovr_map::Dict, value_map::Dict, cost_ma
                           initial_budget::Float64 = 150e6,
                           seasonal_revenue::Float64 = 50e6,
                           initial_squad_strategy::String = "top_value",
-                          num_windows::Int = NUM_WINDOWS)
+                          num_windows::Int = 4,
+                          model_params_override::Union{Nothing,ModelParameters} = nothing)
 
     println("\n" * "="^60)
     println("⚽ SQUAD OPTIMIZATION MODULE")
@@ -77,7 +213,9 @@ function run_optimization(df::DataFrame, ovr_map::Dict, value_map::Dict, cost_ma
     initial_squad = if startswith(initial_squad_strategy, "team:")
         # Extract players from specific team
         team_name = replace(initial_squad_strategy, "team:" => "")
-        team_players = df[df.club_name .== team_name, :player_id]
+        normalized_team_name = strip(lowercase(team_name))
+        team_mask = map(name -> !ismissing(name) && strip(lowercase(String(name))) == normalized_team_name, df.club_name)
+        team_players = df[team_mask, :player_id]
 
         if isempty(team_players)
             @warn "Team '$team_name' not found. Falling back to top_value strategy."
@@ -115,30 +253,10 @@ function run_optimization(df::DataFrame, ovr_map::Dict, value_map::Dict, cost_ma
     # -------------------------------------------------------------------------
     println("🎛️  Configuring model parameters...")
 
-    model_params = ModelParameters(
+    model_params = isnothing(model_params_override) ? ModelParameters(
         initial_budget = initial_budget,
-        seasonal_revenue = seasonal_revenue,
-        max_squad_size = 30,
-        min_squad_size = 18,
-        friction_penalty = 1.5,  # Equilibrado
-        transaction_cost_buy = 0.12,
-        transaction_cost_sell = 0.10,
-        signing_bonus_rate = 0.5,
-        formation = Dict(
-            "GK"  => (1, 1),
-            "DEF" => (3, 5),
-            "MID" => (3, 5),
-            "FWD" => (1, 3)
-        ),
-        # Strategy weights (Equilibrado)
-        weight_quality = 0.80,
-        weight_potential = 0.15,
-        decay_quimica = 0.70,
-        peso_asset = 0.2,
-        peso_performance = 1.0,
-        bonus_entrosamento = 2.0,
-        risk_appetite = 1.0
-    )
+        seasonal_revenue = seasonal_revenue
+    ) : model_params_override
 
     # -------------------------------------------------------------------------
     # 4. Build and Solve Model
@@ -233,8 +351,11 @@ end
 Main entry point - runs both data pipeline and optimization.
 """
 function main()
+    config_path = get_experiment_config_path(ARGS)
+    exp_cfg = load_experiment_config(config_path)
+
     # Run data pipeline
-    df, ovr_map, value_map, cost_map, growth_potential_map, wage_map = run_pipeline()
+    df, ovr_map, value_map, cost_map, growth_potential_map, wage_map = run_pipeline(exp_cfg.num_windows)
 
     # Check if optimization dependencies are available
     println("\n" * "="^60)
@@ -248,9 +369,11 @@ function main()
             # Run optimization
             results = run_optimization(
                 df, ovr_map, value_map, cost_map, growth_potential_map, wage_map,
-                initial_budget = 150e6,
-                seasonal_revenue = 50e6,
-                initial_squad_strategy = "top_value"
+                initial_budget = exp_cfg.model_params.initial_budget,
+                seasonal_revenue = exp_cfg.model_params.seasonal_revenue,
+                initial_squad_strategy = exp_cfg.initial_squad_strategy,
+                num_windows = exp_cfg.num_windows,
+                model_params_override = exp_cfg.model_params
             )
 
             println("\n" * "="^60)
