@@ -1,0 +1,28 @@
+[buying_club]
+name = "Flamengo"
+reputation = 1.0
+
+[market_settings]
+# Reputation for peripheric leagues not listed below
+default_league_reputation = 0.8 
+# How much each IR star raises the market value
+ir_multiplier = 0.1 
+
+[leagues]
+# European Elite Leagues
+"Premier League" = 1.6
+"La Liga" = 1.5
+"Bundesliga" = 1.4
+"Serie A" = 1.4
+"Ligue 1" = 1.3
+
+# Strong Leagues
+"Primeira Liga" = 1.2
+"Eredivisie" = 1.1
+"Campeonato Brasileiro" = 1.0
+"Liga Profesional de Fútbol" = 0.9
+
+# Alternative Leagues
+"Major League Soccer" = 0.9
+"Pro League" = 1.3  # Exemplo de inflação de mercado
+"Süper Lig" = 1.1
