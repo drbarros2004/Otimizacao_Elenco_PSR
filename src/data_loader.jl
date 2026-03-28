@@ -30,8 +30,8 @@ function load_and_clean_data()
     df_base = CSV.read(RAW_BASE_PATH, DataFrame)
     df_custom = CSV.read(RAW_CUSTOM_PATH, DataFrame)
 
-    # Remove Brazilian-team rows from base source to avoid unlicensed placeholders.
-    # Keep Brazilian teams only from the custom curated source.
+    # Remove Brazilian-team rows from base source to avoid unlicensed players
+    # Keep Brazilian teams only from the custom source
     custom_clubs = Set(
         lowercase.(strip.(collect(skipmissing(df_custom.club_name))))
     )
@@ -75,7 +75,7 @@ function load_and_clean_data()
     # Calculating the age of the players
     df_cleaned.age = calculate_age.(df_cleaned.dob)
 
-    # Map positions to tactical groups (GK, DEF, MID, FWD)
+    # Map positions to granular tactical groups (e.g., GK, CB, CM, ST)
     df_cleaned.pos_group = map_position_group.(df_cleaned.positions)
 
     # Null Handling (Imputation)
@@ -97,8 +97,8 @@ end
 """
 Simulates player evolution across multiple windows sequentially.
 Returns two maps:
-1. ovr_map: (player_id, window) -> OVR
-2. value_map: (player_id, window) -> Value
+1. `ovr_map`: (player_id, window) -> OVR
+2. `value_map`: (player_id, window) -> Value
 """
 function generate_projections(df_players::DataFrame, num_windows::Int)
     println("Simulating multi-period evolution (OVR, Value & Growth Potential)...")
@@ -208,16 +208,16 @@ function export_evolution_analysis(df_players::DataFrame, num_windows::Int)
     return df_analysis
 end
 
-# TODO: deixar o agrupamento mais específico (RB e LB, RW e LW, etc.)
+# TODO: VERIFICAR SE ESSA NOVA VERSÃO ESTÁ CORRETA
 """
-Maps SoFIFA position strings to tactical position groups.
-Returns the primary position group: GK, DEF, MID, or FWD.
+Maps SoFIFA position strings to granular tactical position groups.
+Returns the player's primary position group.
 
 # Arguments
 - `position_string::AbstractString`: Raw position from SoFIFA (e.g., "ST, LW, LM" or "CB")
 
 # Returns
-- `String`: One of "GK", "DEF", "MID", "FWD"
+- `String`: One of "GK", "CB", "CM", "RB", "LB", "RW", "LW", "ST"
 """
 function map_position_group(position_string::AbstractString)
     # Extract first position (primary position)
@@ -226,15 +226,23 @@ function map_position_group(position_string::AbstractString)
     # Position mapping
     if primary_pos == "GK"
         return "GK"
-    elseif primary_pos in ["CB", "RB", "LB", "RWB", "LWB"]
-        return "DEF"
-    elseif primary_pos in ["CDM", "CM", "CAM", "RM", "LM"]
-        return "MID"
-    elseif primary_pos in ["ST", "CF", "LW", "RW"]
-        return "FWD"
+    elseif primary_pos in ["RB", "RWB"]
+        return "RB"
+    elseif primary_pos in ["LB", "LWB"]
+        return "LB"
+    elseif primary_pos in ["CB"]
+        return "CB"
+    elseif primary_pos in ["CDM", "CM", "CAM"]
+        return "CM"
+    elseif primary_pos in ["RM", "RW"]
+        return "RW"
+    elseif primary_pos in ["LW", "LM"]
+        return "LW"
+    elseif primary_pos in ["ST", "CF"]
+        return "ST"
     else
-        @warn "Unknown position: $primary_pos. Defaulting to MID."
-        return "MID"
+        @warn "Unknown position: $primary_pos. Defaulting to CM."
+        return "CM"
     end
 end
 

@@ -12,10 +12,7 @@ EXACT translation of Python/PuLP model including:
 
 using JuMP, Gurobi, DataFrames, CSV
 
-# =============================================================================
-# CONSTANTS
-# =============================================================================
-
+# Declaring constants
 const S_MAX = 10.0         
 const S_INICIAL = 5.0      
 const BONUS_INCREMENTO = 0.5  
@@ -32,10 +29,7 @@ const P_TITULAR = 1e6
 const P_SALARIO = 1e5
 const P_CAIXA = 1e9
 
-# =============================================================================
-# DATA STRUCTURES
-# =============================================================================
-
+# Declaring our model structures
 struct ModelData
     players::DataFrame
     windows::UnitRange{Int}
@@ -75,10 +69,14 @@ struct ModelParameters
         transaction_cost_sell::Float64 = 0.10,
         signing_bonus_rate::Float64 = 0.5,
         formation::Dict{String, Tuple{Int,Int}} = Dict(
-            "GK"  => (1, 1),
-            "DEF" => (3, 5),
-            "MID" => (3, 5),
-            "FWD" => (1, 3)
+            "GK" => (1, 1),
+            "CB" => (2, 3),
+            "RB" => (0, 1),
+            "LB" => (0, 1),
+            "CM" => (2, 4),
+            "RW" => (0, 2),
+            "LW" => (0, 2),
+            "ST" => (1, 2)
         ),
         weight_quality::Float64 = 0.80,
         weight_potential::Float64 = 0.15,
@@ -135,7 +133,7 @@ function build_squad_optimization_model(data::ModelData, params::ModelParameters
     J = players.player_id
     T = data.windows
     pos_groups = Dict(row.player_id => row.pos_group for row in eachrow(players))
-    pos_group_names = unique(values(pos_groups))
+    formation_positions = collect(keys(params.formation))
 
     # Generate pairs for chemistry
     pairs = generate_player_pairs(data.initial_squad)
@@ -157,8 +155,8 @@ function build_squad_optimization_model(data::ModelData, params::ModelParameters
     @variable(model, 0 <= Quimica[(i,j) in pairs, t in T] <= S_MAX)
 
     # Soft constraint slacks
-    @variable(model, slack_posicao[p in pos_group_names, t in T] >= 0)
-    @variable(model, slack_titular[p in pos_group_names, t in T] >= 0)
+    @variable(model, slack_posicao[p in formation_positions, t in T] >= 0)
+    @variable(model, slack_titular[p in formation_positions, t in T] >= 0)
     @variable(model, slack_salario[t in T] >= 0)
 
     # ==== INITIAL CONDITIONS ====
@@ -335,7 +333,7 @@ function build_squad_optimization_model(data::ModelData, params::ModelParameters
 
     # 5. Soft constraint penalties
     for t in T
-        add_to_expression!(obj_terms, -P_TITULAR * sum(slack_titular[p,t] for p in pos_group_names))
+        add_to_expression!(obj_terms, -P_TITULAR * sum(slack_titular[p,t] for p in formation_positions))
         add_to_expression!(obj_terms, -P_SALARIO * slack_salario[t])
         add_to_expression!(obj_terms, -P_CAIXA * budget_deficit[t])
     end

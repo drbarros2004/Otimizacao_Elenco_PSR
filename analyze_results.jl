@@ -53,7 +53,7 @@ function analyze_squad_decisions(decisions_path::String="output/squad_decisions.
         println("\n🏟️  SQUAD COMPOSITION ($(nrow(squad)) players)")
 
         # Position breakdown
-        for pos in ["GK", "DEF", "MID", "FWD"]
+        for pos in sort(unique(skipmissing(df.pos_group)))
             squad_pos = filter(r -> r.pos_group == pos, squad)
             starters_pos = filter(r -> r.pos_group == pos, starters)
             println("   $pos: $(nrow(squad_pos)) total ($(nrow(starters_pos)) starters)")

@@ -26,15 +26,19 @@ end
     _parse_formation(formation_cfg::Dict{String,Any})
 
 Parses formation limits from TOML into Dict{String, Tuple{Int, Int}}.
-Expected format: GK = [1, 1], DEF = [3, 5], MID = [3, 5], FWD = [1, 3].
+Expected format: POSITION = [min, max] (e.g., GK = [1, 1], CB = [2, 3]).
 """
 function _parse_formation(formation_cfg::Dict{String,Any})
-    required_positions = ["GK", "DEF", "MID", "FWD"]
     formation = Dict{String, Tuple{Int, Int}}()
 
-    for pos in required_positions
-        if !haskey(formation_cfg, pos)
-            error("Missing formation entry for '$pos' in experiment config.")
+    if isempty(formation_cfg)
+        error("Section [formation] cannot be empty in experiment config.")
+    end
+
+    for (raw_pos, raw_range) in formation_cfg
+        pos = strip(String(raw_pos))
+        if isempty(pos)
+            error("Formation entry has an empty position key.")
         end
 
         raw_range = formation_cfg[pos]
@@ -48,6 +52,15 @@ function _parse_formation(formation_cfg::Dict{String,Any})
             error("Invalid formation range for '$pos': [$minv, $maxv].")
         end
         formation[pos] = (minv, maxv)
+    end
+
+    total_min = sum(v[1] for v in values(formation))
+    total_max = sum(v[2] for v in values(formation))
+    if total_min > 11
+        error("Invalid formation: sum of all minimum starters is $total_min, but XI has 11 players.")
+    end
+    if total_max < 11
+        error("Invalid formation: sum of all maximum starters is $total_max, but XI needs 11 players.")
     end
 
     return formation
@@ -203,7 +216,17 @@ function run_optimization(df::DataFrame, ovr_map::Dict, value_map::Dict, cost_ma
     println("="^60)
 
     # -------------------------------------------------------------------------
-    # 1. Select Initial Squad
+    # 1. Configure Model Parameters
+    # -------------------------------------------------------------------------
+    println("🎛️  Configuring model parameters...")
+
+    model_params = isnothing(model_params_override) ? ModelParameters(
+        initial_budget = initial_budget,
+        seasonal_revenue = seasonal_revenue
+    ) : model_params_override
+
+    # -------------------------------------------------------------------------
+    # 2. Select Initial Squad
     # -------------------------------------------------------------------------
     println("\n📋 Selecting initial squad (strategy: $initial_squad_strategy)...")
 
@@ -219,13 +242,13 @@ function run_optimization(df::DataFrame, ovr_map::Dict, value_map::Dict, cost_ma
 
         if isempty(team_players)
             @warn "Team '$team_name' not found. Falling back to top_value strategy."
-            select_top_value_squad(df, cost_map, initial_window, initial_budget)
+            select_top_value_squad(df, cost_map, initial_window, initial_budget, model_params.formation)
         else
             println("   Selected $(length(team_players)) players from $team_name")
             team_players
         end
     elseif initial_squad_strategy == "top_value"
-        select_top_value_squad(df, cost_map, initial_window, initial_budget)
+        select_top_value_squad(df, cost_map, initial_window, initial_budget, model_params.formation)
     else
         error("Invalid initial_squad_strategy: $initial_squad_strategy")
     end
@@ -233,7 +256,7 @@ function run_optimization(df::DataFrame, ovr_map::Dict, value_map::Dict, cost_ma
     println("   ✅ Initial squad size: $(length(initial_squad)) players")
 
     # -------------------------------------------------------------------------
-    # 2. Prepare Model Data
+    # 3. Prepare Model Data
     # -------------------------------------------------------------------------
     println("\n📊 Preparing optimization data...")
 
@@ -247,16 +270,6 @@ function run_optimization(df::DataFrame, ovr_map::Dict, value_map::Dict, cost_ma
         wage_map,
         initial_squad
     )
-
-    # -------------------------------------------------------------------------
-    # 3. Configure Model Parameters
-    # -------------------------------------------------------------------------
-    println("🎛️  Configuring model parameters...")
-
-    model_params = isnothing(model_params_override) ? ModelParameters(
-        initial_budget = initial_budget,
-        seasonal_revenue = seasonal_revenue
-    ) : model_params_override
 
     # -------------------------------------------------------------------------
     # 4. Build and Solve Model
@@ -281,10 +294,27 @@ end
     select_top_value_squad(df::DataFrame, cost_map::Dict, window::Int, budget::Float64)
 
 Selects the best value-for-money squad within budget constraints using a greedy heuristic.
-Ensures tactical balance (GK, DEF, MID, FWD).
+Ensures tactical balance using the configured formation groups.
 """
-function select_top_value_squad(df::DataFrame, cost_map::Dict, window::Int, budget::Float64)
+function select_top_value_squad(
+    df::DataFrame,
+    cost_map::Dict,
+    window::Int,
+    budget::Float64,
+    formation::Dict{String, Tuple{Int, Int}}
+)
     println("   Using greedy heuristic to select initial squad...")
+
+    formation_positions = collect(keys(formation))
+    valid_position = Set(formation_positions)
+
+    min_requirements = Dict{String, Int}()
+    max_per_position = Dict{String, Int}()
+    for (pos, (min_starters, max_starters)) in formation
+        # Keep at least one backup by default.
+        min_requirements[pos] = max(1, min_starters + 1)
+        max_per_position[pos] = max(min_requirements[pos], max_starters + 4)
+    end
 
     # Create value/cost ratio metric
     candidates = DataFrame(
@@ -305,15 +335,15 @@ function select_top_value_squad(df::DataFrame, cost_map::Dict, window::Int, budg
     # Greedy selection with position constraints
     selected = Int[]
     current_cost = 0.0
-    position_counts = Dict("GK" => 0, "DEF" => 0, "MID" => 0, "FWD" => 0)
-
-    # Minimum requirements for a valid squad
-    min_requirements = Dict("GK" => 2, "DEF" => 6, "MID" => 6, "FWD" => 3)
-    max_per_position = Dict("GK" => 3, "DEF" => 10, "MID" => 10, "FWD" => 7)
+    position_counts = Dict(pos => 0 for pos in formation_positions)
 
     for row in eachrow(candidates)
         pos = row.pos_group
         cost = row.cost
+
+        if !(pos in valid_position)
+            continue
+        end
 
         # Check if we can afford and need this position
         if current_cost + cost <= budget * 0.85 &&  # Keep 15% buffer
@@ -339,7 +369,8 @@ function select_top_value_squad(df::DataFrame, cost_map::Dict, window::Int, budg
         end
     end
 
-    println("   Squad composition: GK=$(position_counts["GK"]), DEF=$(position_counts["DEF"]), MID=$(position_counts["MID"]), FWD=$(position_counts["FWD"])")
+    composition = join(sort(["$pos=$(position_counts[pos])" for pos in keys(position_counts)]), ", ")
+    println("   Squad composition: $composition")
     println("   Total cost: €$(round(current_cost/1e6, digits=1))M / €$(round(budget/1e6, digits=1))M")
 
     return selected
