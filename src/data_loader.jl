@@ -30,6 +30,34 @@ function load_and_clean_data()
     df_base = CSV.read(RAW_BASE_PATH, DataFrame)
     df_custom = CSV.read(RAW_CUSTOM_PATH, DataFrame)
 
+    # Remove Brazilian-team rows from base source to avoid unlicensed placeholders.
+    # Keep Brazilian teams only from the custom curated source.
+    custom_clubs = Set(
+        lowercase.(strip.(collect(skipmissing(df_custom.club_name))))
+    )
+
+    is_brazilian_league(league) = begin
+        if ismissing(league)
+            return false
+        end
+        league_norm = lowercase(strip(String(league)))
+        return occursin("brazil", league_norm) ||
+               occursin("brasileir", league_norm) ||
+               occursin("série a", league_norm) ||
+               occursin("serie a", league_norm)
+    end
+
+    base_keep_mask = map(eachrow(df_base)) do row
+        club_norm = ismissing(row.club_name) ? "" : lowercase(strip(String(row.club_name)))
+        remove_by_club = !isempty(club_norm) && (club_norm in custom_clubs)
+        remove_by_league = is_brazilian_league(row.club_league_name)
+        return !(remove_by_club || remove_by_league)
+    end
+
+    base_before = nrow(df_base)
+    df_base = df_base[base_keep_mask, :]
+    println("🧹 Removed $(base_before - nrow(df_base)) Brazilian-team rows from base dataset.")
+
     # The custom data doesn't include the league, so we have to hard-code it in here
     df_custom.club_league_name .= "Brazil Serie A"
     
@@ -44,12 +72,16 @@ function load_and_clean_data()
     # Filters only relevant columns
     df_cleaned = df_total[:, intersect(names(df_total), String.(SCRAPER_COLUMNS))]
     
-    # Calculating the age of the players 
+    # Calculating the age of the players
     df_cleaned.age = calculate_age.(df_cleaned.dob)
-    
+
+    # Map positions to tactical groups (GK, DEF, MID, FWD)
+    df_cleaned.pos_group = map_position_group.(df_cleaned.positions)
+
     # Null Handling (Imputation)
     df_cleaned.value = Float64.(coalesce.(df_cleaned.value, 0.0))
     df_cleaned.international_reputation = Float64.(coalesce.(df_cleaned.international_reputation, 1.0))
+    df_cleaned.club_name = coalesce.(df_cleaned.club_name, "Unknown")
     
     # Persistence
     mkpath(dirname(PROCESSED_OUTPUT_PATH))
@@ -69,49 +101,65 @@ Returns two maps:
 2. value_map: (player_id, window) -> Value
 """
 function generate_projections(df_players::DataFrame, num_windows::Int)
-    println("Simulating multi-period evolution (OVR & Value)...")
-    
+    println("Simulating multi-period evolution (OVR, Value & Growth Potential)...")
+
     ovr_map = Dict{Tuple{Int, Int}, Int}()
     value_map = Dict{Tuple{Int, Int}, Float64}()
-    
-    # Set seed for reproducibility 
+    growth_potential_map = Dict{Tuple{Int, Int}, Float64}()
+
+    # Set seed for reproducibility
     Random.seed!(42)
 
     for row in eachrow(df_players)
         p_id = row.player_id
-        
+
         # Initial State (Window 0)
         current_ovr = Float64(row.overall_rating)
         current_val = Float64(row.value)
         current_age = Int(row.age)
-        
+        potential = Float64(row.potential)
+
         ovr_map[(p_id, 0)] = Int(current_ovr)
         value_map[(p_id, 0)] = current_val
-        
+
+        # Calculate growth potential for window 0 using evolution_step logic
+        gap = max(0.0, potential - current_ovr)
+        growth_coeff = max(0.02, 0.28 - (0.01 * current_age))
+        growth_potential_map[(p_id, 0)] = round(gap * growth_coeff, digits=2)
+
         # Simulate subsequent windows
         for w in 1:num_windows
 
-            new_ovr, new_val, new_age = evolution_step(
-                current_ovr, 
-                Float64(row.potential), 
-                current_age, 
-                current_val, 
+            new_ovr, new_val, new_age, status = evolution_step(
+                current_ovr,
+                potential,
+                current_age,
+                current_val,
                 w
             )
-            
+
             # Update state for next window iteration
             current_ovr = Float64(new_ovr)
             current_val = new_val
             current_age = new_age
-            
+
             # Store in maps
             ovr_map[(p_id, w)] = new_ovr
             value_map[(p_id, w)] = round(new_val, digits=2)
+
+            # Calculate growth potential using same logic as evolution_step
+            gap = max(0.0, potential - Float64(new_ovr))
+            growth_coeff = max(0.02, 0.28 - (0.01 * new_age))
+            growth_potential_map[(p_id, w)] = round(gap * growth_coeff, digits=2)
         end
     end
-    
+
     println("Projections completed for $(nrow(df_players)) players.")
-    return ovr_map, value_map
+    println("   ✅ OVR map: $(length(ovr_map)) entries")
+    println("   ✅ Value map: $(length(value_map)) entries")
+    println("   ✅ Growth Potential map: $(length(growth_potential_map)) entries")
+
+    return ovr_map, value_map, growth_potential_map
 end
 
 """
@@ -158,6 +206,66 @@ function export_evolution_analysis(df_players::DataFrame, num_windows::Int)
     CSV.write("data/processed/evolution_analysis.csv", df_analysis)
     println("Sequential analysis saved to data/processed/evolution_analysis.csv")
     return df_analysis
+end
+
+# TODO: deixar o agrupamento mais específico (RB e LB, RW e LW, etc.)
+"""
+Maps SoFIFA position strings to tactical position groups.
+Returns the primary position group: GK, DEF, MID, or FWD.
+
+# Arguments
+- `position_string::AbstractString`: Raw position from SoFIFA (e.g., "ST, LW, LM" or "CB")
+
+# Returns
+- `String`: One of "GK", "DEF", "MID", "FWD"
+"""
+function map_position_group(position_string::AbstractString)
+    # Extract first position (primary position)
+    primary_pos = strip(split(String(position_string), ",")[1])
+
+    # Position mapping
+    if primary_pos == "GK"
+        return "GK"
+    elseif primary_pos in ["CB", "RB", "LB", "RWB", "LWB"]
+        return "DEF"
+    elseif primary_pos in ["CDM", "CM", "CAM", "RM", "LM"]
+        return "MID"
+    elseif primary_pos in ["ST", "CF", "LW", "RW"]
+        return "FWD"
+    else
+        @warn "Unknown position: $primary_pos. Defaulting to MID."
+        return "MID"
+    end
+end
+
+"""
+Generates a map of wages (annual salary in EUR) for all players across windows.
+For simplicity, wage is assumed constant unless the player significantly improves.
+"""
+function generate_wage_map(df_players::DataFrame, ovr_map::Dict, num_windows::Int)
+    println("Generating Wage map...")
+
+    wage_map = Dict{Tuple{Int, Int}, Float64}()
+
+    for row in eachrow(df_players)
+        p_id = row.player_id
+        # Input schema uses `wage` from SoFIFA scraper.
+        base_wage = Float64(coalesce(row.wage, 50_000.0))  # Default €50k/year if missing
+        base_ovr = row.overall_rating
+
+        for w in 0:num_windows
+            current_ovr = ovr_map[(p_id, w)]
+
+            # Wage adjusts with OVR improvement (simple model)
+            ovr_factor = current_ovr / max(base_ovr, 1)
+            adjusted_wage = base_wage * ovr_factor
+
+            wage_map[(p_id, w)] = round(adjusted_wage, digits=2)
+        end
+    end
+
+    println("✅ Wage map generated.")
+    return wage_map
 end
 
 """

@@ -29,8 +29,6 @@ function calculate_age(dob_value)
     end
 end
 
-# src/utils.jl
-
 """
     evolution_step(ovr::Float64, pot::Float64, age::Int, value::Float64, window_idx::Int)
 
