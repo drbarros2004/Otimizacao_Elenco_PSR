@@ -1,0 +1,34 @@
+[simulation]
+# Number of transfer windows to simulate (2 windows ~= 1 season)
+num_windows = 4
+
+[optimization]
+# Financial setup
+initial_budget = 150000000.0
+seasonal_revenue = 50000000.0
+# Options: "top_value" or "team:<Club Name>"
+initial_squad_strategy = "team:Flamengo"
+
+[constraints]
+max_squad_size = 30
+min_squad_size = 18
+friction_penalty = 1.5
+transaction_cost_buy = 0.12
+transaction_cost_sell = 0.10
+signing_bonus_rate = 0.5
+
+[formation]
+# [min_starters, max_starters] by positional group
+GK = [1, 1]
+DEF = [3, 5]
+MID = [3, 5]
+FWD = [1, 3]
+
+[objective]
+weight_quality = 0.80
+weight_potential = 0.15
+decay_quimica = 0.70
+peso_asset = 0.2
+peso_performance = 1.0
+bonus_entrosamento = 2.0
+risk_appetite = 1.0
