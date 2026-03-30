@@ -4,35 +4,53 @@ num_windows = 4
 
 [optimization]
 # Financial setup
-initial_budget = 150000000.0
-seasonal_revenue = 50000000.0
+initial_budget = 40000000.0
+seasonal_revenue = 10000000.0
 # Options: "top_value" or "team:<Club Name>"
-initial_squad_strategy = "team:Flamengo"
+initial_squad_strategy = "team:Botafogo"
 
 [constraints]
 max_squad_size = 30
 min_squad_size = 18
-friction_penalty = 1.5
-transaction_cost_buy = 0.12
-transaction_cost_sell = 0.10
+friction_penalty = 12.0
+transaction_cost_buy = 0.15
+transaction_cost_sell = 0.12
 signing_bonus_rate = 0.5
 
-[formation]
-# [min_starters, max_starters] by granular positional group
-GK = [1, 1]
-CB = [2, 3]
-RB = [0, 1]
-LB = [0, 1]
-CM = [2, 4]
-RW = [0, 2]
-LW = [0, 2]
-ST = [1, 2]
+[formation_catalog.433]
+# Exact starters by position for each tactical scheme
+GK = 1
+CB = 2
+RB = 1
+LB = 1
+CM = 3
+RW = 1
+LW = 1
+ST = 1
+
+[formation_catalog.442]
+GK = 1
+CB = 2
+RB = 1
+LB = 1
+CM = 2
+RW = 1
+LW = 1
+ST = 2
+
+[formation_plan]
+# Accepted keys: 0|w0|window_0 (window index starts at 0)
+window_0 = "433"
+window_1 = "433"
+window_2 = "442"
+window_3 = "442"
+window_4 = "442"
 
 [objective]
-weight_quality = 0.80
-weight_potential = 0.15
-decay_quimica = 0.70
+weight_quality = 0.9
+weight_potential = 0.1
+decay_quimica = 0.5
 peso_asset = 0.2
 peso_performance = 1.0
 bonus_entrosamento = 2.0
-risk_appetite = 1.0
+risk_appetite = 0.1

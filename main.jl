@@ -23,47 +23,136 @@ struct ExperimentConfig
 end
 
 """
-    _parse_formation(formation_cfg::Dict{String,Any})
+    _parse_formation_counts(formation_cfg::Dict{String,Any})
 
-Parses formation limits from TOML into Dict{String, Tuple{Int, Int}}.
-Expected format: POSITION = [min, max] (e.g., GK = [1, 1], CB = [2, 3]).
+Parses exact formation counts from TOML into Dict{String, Int}.
+Expected format: POSITION = count (e.g., GK = 1, CB = 2).
 """
-function _parse_formation(formation_cfg::Dict{String,Any})
-    formation = Dict{String, Tuple{Int, Int}}()
+function _parse_formation_counts(formation_cfg::Dict{String,Any})
+    formation = Dict{String, Int}()
 
     if isempty(formation_cfg)
         error("Section [formation] cannot be empty in experiment config.")
     end
 
-    for (raw_pos, raw_range) in formation_cfg
+    for (raw_pos, raw_count) in formation_cfg
         pos = strip(String(raw_pos))
         if isempty(pos)
             error("Formation entry has an empty position key.")
         end
 
-        raw_range = formation_cfg[pos]
-        if !(raw_range isa Vector) || length(raw_range) != 2
-            error("Formation '$pos' must be an array with exactly 2 values: [min, max].")
+        if !(raw_count isa Integer)
+            error("Formation '$pos' must be an integer starter count.")
         end
 
-        minv = Int(raw_range[1])
-        maxv = Int(raw_range[2])
-        if minv < 0 || maxv < minv
-            error("Invalid formation range for '$pos': [$minv, $maxv].")
+        count = Int(raw_count)
+        if count < 0
+            error("Invalid formation count for '$pos': $count.")
         end
-        formation[pos] = (minv, maxv)
+        formation[pos] = count
     end
 
-    total_min = sum(v[1] for v in values(formation))
-    total_max = sum(v[2] for v in values(formation))
-    if total_min > 11
-        error("Invalid formation: sum of all minimum starters is $total_min, but XI has 11 players.")
-    end
-    if total_max < 11
-        error("Invalid formation: sum of all maximum starters is $total_max, but XI needs 11 players.")
+    total = sum(values(formation))
+    if total != 11
+        error("Invalid formation: exact starter counts sum to $total, but XI must be exactly 11.")
     end
 
     return formation
+end
+
+"""
+    _parse_window_key(raw_key::AbstractString)
+
+Parses a window key from TOML. Accepted formats: "0", "w0", "window_0".
+"""
+function _parse_window_key(raw_key::AbstractString)
+    key = lowercase(strip(String(raw_key)))
+
+    if occursin(r"^\d+$", key)
+        return parse(Int, key)
+    elseif occursin(r"^w\d+$", key)
+        return parse(Int, key[2:end])
+    elseif occursin(r"^window_\d+$", key)
+        return parse(Int, split(key, "_")[end])
+    else
+        error("Invalid formation_plan key '$raw_key'. Use one of: '0', 'w0', 'window_0'.")
+    end
+end
+
+"""
+    _parse_tactical_strategy(cfg::Dict{String,Any}, num_windows::Int)
+
+Parses deterministic tactical setup:
+1. `formation_catalog.<scheme>.<position> = count`
+2. `formation_plan.<window> = <scheme>`
+
+Backwards compatibility:
+- If `formation_catalog` is missing, falls back to legacy `[formation]` as scheme `default`.
+"""
+function _parse_tactical_strategy(cfg::Dict{String,Any}, num_windows::Int)
+    formation_catalog_cfg = get(cfg, "formation_catalog", Dict{String,Any}())
+    legacy_formation_cfg = get(cfg, "formation", Dict{String,Any}())
+    formation_plan_cfg = get(cfg, "formation_plan", Dict{String,Any}())
+
+    formation_catalog = Dict{String, Dict{String, Int}}()
+
+    if !isempty(formation_catalog_cfg)
+        for (raw_scheme, raw_limits) in formation_catalog_cfg
+            scheme = strip(String(raw_scheme))
+            if isempty(scheme)
+                error("Found empty scheme name in [formation_catalog].")
+            end
+            if !(raw_limits isa Dict)
+                error("Scheme '$scheme' in [formation_catalog] must be a table of positions.")
+            end
+
+            counts = _parse_formation_counts(raw_limits)
+            formation_catalog[scheme] = counts
+        end
+    elseif !isempty(legacy_formation_cfg)
+        formation_catalog["default"] = _parse_formation_counts(legacy_formation_cfg)
+    else
+        error("You must provide either [formation_catalog] or [formation] in experiment config.")
+    end
+
+    if isempty(formation_catalog)
+        error("No valid tactical scheme found in experiment config.")
+    end
+
+    formation_by_window = Dict{Int, String}()
+
+    if isempty(formation_plan_cfg)
+        default_scheme = first(sort(collect(keys(formation_catalog))))
+        for w in 0:num_windows
+            formation_by_window[w] = default_scheme
+        end
+    else
+        for (raw_window, raw_scheme) in formation_plan_cfg
+            w = _parse_window_key(String(raw_window))
+            if w < 0 || w > num_windows
+                error("formation_plan defines window $w, but simulation windows are 0:$num_windows.")
+            end
+
+            scheme = strip(String(raw_scheme))
+            if !haskey(formation_catalog, scheme)
+                error("formation_plan references unknown scheme '$scheme'.")
+            end
+
+            formation_by_window[w] = scheme
+        end
+
+        # Fill unspecified windows with the most recent known scheme.
+        default_scheme = get(formation_by_window, 0, first(sort(collect(keys(formation_catalog)))))
+        for w in 0:num_windows
+            if haskey(formation_by_window, w)
+                default_scheme = formation_by_window[w]
+            else
+                formation_by_window[w] = default_scheme
+            end
+        end
+    end
+
+    return formation_catalog, formation_by_window
 end
 
 """
@@ -81,7 +170,6 @@ function load_experiment_config(config_path::String=DEFAULT_EXPERIMENT_CONFIG_PA
     sim_cfg = get(cfg, "simulation", Dict{String,Any}())
     opt_cfg = get(cfg, "optimization", Dict{String,Any}())
     constraints_cfg = get(cfg, "constraints", Dict{String,Any}())
-    formation_cfg = get(cfg, "formation", Dict{String,Any}())
     objective_cfg = get(cfg, "objective", Dict{String,Any}())
 
     num_windows = Int(get(sim_cfg, "num_windows", 4))
@@ -99,7 +187,6 @@ function load_experiment_config(config_path::String=DEFAULT_EXPERIMENT_CONFIG_PA
     transaction_cost_buy = Float64(get(constraints_cfg, "transaction_cost_buy", 0.12))
     transaction_cost_sell = Float64(get(constraints_cfg, "transaction_cost_sell", 0.10))
     signing_bonus_rate = Float64(get(constraints_cfg, "signing_bonus_rate", 0.5))
-
     if min_squad_size > max_squad_size
         error("constraints.min_squad_size cannot be greater than constraints.max_squad_size.")
     end
@@ -110,7 +197,7 @@ function load_experiment_config(config_path::String=DEFAULT_EXPERIMENT_CONFIG_PA
         error("optimization.seasonal_revenue must be >= 0.")
     end
 
-    formation = _parse_formation(formation_cfg)
+    formation_catalog, formation_by_window = _parse_tactical_strategy(cfg, num_windows)
 
     weight_quality = Float64(get(objective_cfg, "weight_quality", 0.80))
     weight_potential = Float64(get(objective_cfg, "weight_potential", 0.15))
@@ -129,7 +216,8 @@ function load_experiment_config(config_path::String=DEFAULT_EXPERIMENT_CONFIG_PA
         transaction_cost_buy = transaction_cost_buy,
         transaction_cost_sell = transaction_cost_sell,
         signing_bonus_rate = signing_bonus_rate,
-        formation = formation,
+        formation_catalog = formation_catalog,
+        formation_by_window = formation_by_window,
         weight_quality = weight_quality,
         weight_potential = weight_potential,
         decay_quimica = decay_quimica,
@@ -142,6 +230,7 @@ function load_experiment_config(config_path::String=DEFAULT_EXPERIMENT_CONFIG_PA
     println("🧪 Loaded experiment config: $config_path")
     println("   Windows: $num_windows")
     println("   Initial strategy: $initial_squad_strategy")
+    println("   Tactical schemes: $(join(sort(collect(keys(formation_catalog))), ", "))")
     println("   Budget: €$(round(initial_budget/1e6, digits=1))M | Seasonal revenue: €$(round(seasonal_revenue/1e6, digits=1))M")
 
     return ExperimentConfig(num_windows, initial_squad_strategy, model_params)
@@ -232,6 +321,7 @@ function run_optimization(df::DataFrame, ovr_map::Dict, value_map::Dict, cost_ma
 
     windows = 0:num_windows
     initial_window = first(windows)
+    default_scheme = first(sort(collect(keys(model_params.formation_catalog))))
 
     initial_squad = if startswith(initial_squad_strategy, "team:")
         # Extract players from specific team
@@ -242,13 +332,17 @@ function run_optimization(df::DataFrame, ovr_map::Dict, value_map::Dict, cost_ma
 
         if isempty(team_players)
             @warn "Team '$team_name' not found. Falling back to top_value strategy."
-            select_top_value_squad(df, cost_map, initial_window, initial_budget, model_params.formation)
+            initial_scheme = get(model_params.formation_by_window, initial_window, default_scheme)
+            initial_formation = model_params.formation_catalog[initial_scheme]
+            select_top_value_squad(df, cost_map, initial_window, initial_budget, initial_formation)
         else
             println("   Selected $(length(team_players)) players from $team_name")
             team_players
         end
     elseif initial_squad_strategy == "top_value"
-        select_top_value_squad(df, cost_map, initial_window, initial_budget, model_params.formation)
+        initial_scheme = get(model_params.formation_by_window, initial_window, default_scheme)
+        initial_formation = model_params.formation_catalog[initial_scheme]
+        select_top_value_squad(df, cost_map, initial_window, initial_budget, initial_formation)
     else
         error("Invalid initial_squad_strategy: $initial_squad_strategy")
     end
@@ -268,14 +362,16 @@ function run_optimization(df::DataFrame, ovr_map::Dict, value_map::Dict, cost_ma
         cost_map,
         growth_potential_map,
         wage_map,
-        initial_squad
+        initial_squad,
+        model_params.formation_catalog,
+        model_params.formation_by_window
     )
 
     # -------------------------------------------------------------------------
     # 4. Build and Solve Model
     # -------------------------------------------------------------------------
     model = build_squad_optimization_model(model_data, model_params, verbose=true)
-    results = solve_model(model, model_data, verbose=true)
+    results = solve_model(model, model_data, model_params, verbose=true)
 
     # -------------------------------------------------------------------------
     # 5. Export Results
@@ -291,7 +387,7 @@ function run_optimization(df::DataFrame, ovr_map::Dict, value_map::Dict, cost_ma
 end
 
 """
-    select_top_value_squad(df::DataFrame, cost_map::Dict, window::Int, budget::Float64)
+    select_top_value_squad(df::DataFrame, cost_map::Dict, window::Int, budget::Float64, formation::Dict{String, Int})
 
 Selects the best value-for-money squad within budget constraints using a greedy heuristic.
 Ensures tactical balance using the configured formation groups.
@@ -301,7 +397,7 @@ function select_top_value_squad(
     cost_map::Dict,
     window::Int,
     budget::Float64,
-    formation::Dict{String, Tuple{Int, Int}}
+    formation::Dict{String, Int}
 )
     println("   Using greedy heuristic to select initial squad...")
 
@@ -310,10 +406,10 @@ function select_top_value_squad(
 
     min_requirements = Dict{String, Int}()
     max_per_position = Dict{String, Int}()
-    for (pos, (min_starters, max_starters)) in formation
+    for (pos, starters_required) in formation
         # Keep at least one backup by default.
-        min_requirements[pos] = max(1, min_starters + 1)
-        max_per_position[pos] = max(min_requirements[pos], max_starters + 4)
+        min_requirements[pos] = max(1, starters_required + 1)
+        max_per_position[pos] = max(min_requirements[pos], starters_required + 4)
     end
 
     # Create value/cost ratio metric

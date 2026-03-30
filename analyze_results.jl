@@ -9,7 +9,10 @@ extract meaningful insights about squad decisions.
 using CSV, DataFrames, Statistics
 
 """
-    analyze_squad_decisions(decisions_path::String="output/squad_decisions.csv")
+    analyze_squad_decisions(
+        decisions_path::String="output/squad_decisions.csv",
+        formation_diagnostics_path::String="output/formation_diagnostics.csv"
+    )
 
 Analyzes squad decisions and prints a comprehensive report.
 
@@ -19,12 +22,16 @@ Analyzes squad decisions and prints a comprehensive report.
 - **bought=1**: Player was purchased in this window
 - **sold=1**: Player was sold in this window
 """
-function analyze_squad_decisions(decisions_path::String="output/squad_decisions.csv")
+function analyze_squad_decisions(
+    decisions_path::String="output/squad_decisions.csv",
+    formation_diagnostics_path::String="output/formation_diagnostics.csv"
+)
     if !isfile(decisions_path)
         error("Results file not found at $decisions_path. Run optimization first!")
     end
 
     df = CSV.read(decisions_path, DataFrame)
+    df_formation = isfile(formation_diagnostics_path) ? CSV.read(formation_diagnostics_path, DataFrame) : nothing
 
     println("\n" * "="^70)
     println("SQUAD OPTIMIZATION RESULTS ANALYSIS")
@@ -45,6 +52,11 @@ function analyze_squad_decisions(decisions_path::String="output/squad_decisions.
         println("\n" * "─"^70)
         println("📅 WINDOW $window")
         println("─"^70)
+
+        if :formation_scheme in names(df_window) && nrow(df_window) > 0
+            active_scheme = first(df_window.formation_scheme)
+            println("🧠 Active tactical scheme: $active_scheme")
+        end
 
         # Squad composition
         squad = filter(r -> r.in_squad == 1, df_window)
@@ -72,6 +84,16 @@ function analyze_squad_decisions(decisions_path::String="output/squad_decisions.
         println("\n📈 QUALITY METRICS:")
         println("   • Average OVR (Starters): $(round(avg_ovr_starters, digits=2))")
         println("   • Average OVR (Full Squad): $(round(avg_ovr_squad, digits=2))")
+
+        if !isnothing(df_formation)
+            df_form_window = filter(r -> r.window == window, df_formation)
+            if nrow(df_form_window) > 0
+                println("\n🧩 TACTICAL CONSTRAINTS:")
+                for row in eachrow(sort(df_form_window, :pos_group))
+                    println("   • $(row.pos_group): $(row.actual_starters) starters | required $(row.required_count) | slack $(round(row.slack_titular, digits=3))")
+                end
+            end
+        end
 
         # Transactions
         if window > 0

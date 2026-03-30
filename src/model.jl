@@ -25,7 +25,6 @@ const BONUS_ENTROSAMENTO = 2.0
 const BIG_M = 1000.0
 
 const P_POSICAO = 1e6
-const P_TITULAR = 1e6
 const P_SALARIO = 1e5
 const P_CAIXA = 1e9
 
@@ -39,6 +38,8 @@ struct ModelData
     growth_potential_map::Dict{Tuple{Int,Int}, Float64}
     wage_map::Dict{Tuple{Int,Int}, Float64}
     initial_squad::Vector{Int}
+    formation_catalog::Dict{String, Dict{String, Int}}
+    formation_by_window::Dict{Int, String}
 end
 
 struct ModelParameters
@@ -50,7 +51,8 @@ struct ModelParameters
     transaction_cost_buy::Float64
     transaction_cost_sell::Float64
     signing_bonus_rate::Float64
-    formation::Dict{String, Tuple{Int,Int}}
+    formation_catalog::Dict{String, Dict{String, Int}}
+    formation_by_window::Dict{Int, String}
     weight_quality::Float64
     weight_potential::Float64
     decay_quimica::Float64
@@ -68,16 +70,19 @@ struct ModelParameters
         transaction_cost_buy::Float64 = 0.12,
         transaction_cost_sell::Float64 = 0.10,
         signing_bonus_rate::Float64 = 0.5,
-        formation::Dict{String, Tuple{Int,Int}} = Dict(
-            "GK" => (1, 1),
-            "CB" => (2, 3),
-            "RB" => (0, 1),
-            "LB" => (0, 1),
-            "CM" => (2, 4),
-            "RW" => (0, 2),
-            "LW" => (0, 2),
-            "ST" => (1, 2)
+        formation_catalog::Dict{String, Dict{String, Int}} = Dict(
+            "default" => Dict(
+                "GK" => 1,
+                "CB" => 2,
+                "RB" => 1,
+                "LB" => 1,
+                "CM" => 3,
+                "RW" => 1,
+                "LW" => 1,
+                "ST" => 1
+            )
         ),
+        formation_by_window::Dict{Int, String} = Dict(0 => "default"),
         weight_quality::Float64 = 0.80,
         weight_potential::Float64 = 0.15,
         decay_quimica::Float64 = DECAY_QUIMICA_DEFAULT,
@@ -88,7 +93,8 @@ struct ModelParameters
     )
         new(initial_budget, seasonal_revenue, max_squad_size, min_squad_size,
             friction_penalty, transaction_cost_buy, transaction_cost_sell, signing_bonus_rate,
-            formation, weight_quality, weight_potential, decay_quimica,
+            formation_catalog, formation_by_window,
+            weight_quality, weight_potential, decay_quimica,
             peso_asset, peso_performance, bonus_entrosamento, risk_appetite)
     end
 end
@@ -99,6 +105,7 @@ struct ModelResults
     solve_time::Float64
     squad_decisions::DataFrame
     budget_evolution::DataFrame
+    formation_diagnostics::DataFrame
 end
 
 # =============================================================================
@@ -114,6 +121,22 @@ function generate_player_pairs(initial_squad::Vector{Int})
         end
     end
     return pairs
+end
+
+function _default_scheme_name(params::ModelParameters)
+    if !isempty(params.formation_by_window)
+        min_window = minimum(collect(keys(params.formation_by_window)))
+        return params.formation_by_window[min_window]
+    end
+    return first(sort(collect(keys(params.formation_catalog))))
+end
+
+function get_window_formation(params::ModelParameters, t::Int)
+    scheme = get(params.formation_by_window, t, _default_scheme_name(params))
+    if !haskey(params.formation_catalog, scheme)
+        error("Window $t references unknown tactical scheme '$scheme'.")
+    end
+    return scheme, params.formation_catalog[scheme]
 end
 
 # =============================================================================
@@ -133,7 +156,15 @@ function build_squad_optimization_model(data::ModelData, params::ModelParameters
     J = players.player_id
     T = data.windows
     pos_groups = Dict(row.player_id => row.pos_group for row in eachrow(players))
-    formation_positions = collect(keys(params.formation))
+    formation_positions = String[]
+    for limits in values(params.formation_catalog)
+        append!(formation_positions, collect(keys(limits)))
+    end
+    formation_positions = unique(sort(formation_positions))
+
+    if isempty(formation_positions)
+        error("No tactical positions found in formation catalog.")
+    end
 
     # Generate pairs for chemistry
     pairs = generate_player_pairs(data.initial_squad)
@@ -156,7 +187,6 @@ function build_squad_optimization_model(data::ModelData, params::ModelParameters
 
     # Soft constraint slacks
     @variable(model, slack_posicao[p in formation_positions, t in T] >= 0)
-    @variable(model, slack_titular[p in formation_positions, t in T] >= 0)
     @variable(model, slack_salario[t in T] >= 0)
 
     # ==== INITIAL CONDITIONS ====
@@ -221,20 +251,18 @@ function build_squad_optimization_model(data::ModelData, params::ModelParameters
         @constraint(model, sum(x[j,t] for j in J) >= params.min_squad_size)
     end
 
-    # ==== FORMATION (SOFT) ====
-    verbose && println("  ├─ Tactical formation constraints (soft)...")
+    # ==== FORMATION (EXACT) ====
+    verbose && println("  ├─ Tactical formation constraints (exact)...")
 
     for t in T
         @constraint(model, sum(y[j,t] for j in J) == 11)
 
-        for (pos, (min_count, max_count)) in params.formation
-            players_in_pos = [j for j in J if pos_groups[j] == pos]
+        _, formation_t = get_window_formation(params, t)
 
+        for (pos, required_count) in formation_t
+            players_in_pos = [j for j in J if pos_groups[j] == pos]
             @constraint(model,
-                sum(y[j,t] for j in players_in_pos) + slack_titular[pos, t] >= min_count
-            )
-            @constraint(model,
-                sum(y[j,t] for j in players_in_pos) <= max_count
+                sum(y[j,t] for j in players_in_pos) == required_count
             )
         end
     end
@@ -333,7 +361,6 @@ function build_squad_optimization_model(data::ModelData, params::ModelParameters
 
     # 5. Soft constraint penalties
     for t in T
-        add_to_expression!(obj_terms, -P_TITULAR * sum(slack_titular[p,t] for p in formation_positions))
         add_to_expression!(obj_terms, -P_SALARIO * slack_salario[t])
         add_to_expression!(obj_terms, -P_CAIXA * budget_deficit[t])
     end
@@ -361,7 +388,7 @@ end
 # SOLVING
 # =============================================================================
 
-function solve_model(model::Model, data::ModelData; verbose::Bool=true)
+function solve_model(model::Model, data::ModelData, params::ModelParameters; verbose::Bool=true)
     verbose && println("\n🚀 Solving optimization model...")
     verbose && println("="^60)
 
@@ -384,6 +411,7 @@ function solve_model(model::Model, data::ModelData; verbose::Bool=true)
 
     J = data.players.player_id
     T = data.windows
+    pos_groups = Dict(row.player_id => row.pos_group for row in eachrow(data.players))
 
     decision_rows = []
     for j in J, t in T
@@ -393,9 +421,11 @@ function solve_model(model::Model, data::ModelData; verbose::Bool=true)
         s_val = round(Int, value(model[:sell][j, t]))
 
         if x_val == 1 || b_val == 1 || s_val == 1
+            formation_scheme = get(data.formation_by_window, t, "default")
             push!(decision_rows, (
                 player_id = j,
                 window = t,
+                formation_scheme = formation_scheme,
                 in_squad = x_val,
                 is_starter = y_val,
                 bought = b_val,
@@ -413,9 +443,34 @@ function solve_model(model::Model, data::ModelData; verbose::Bool=true)
                     deficit = value(model[:budget_deficit][t])) for t in T]
     df_budget = DataFrame(budget_rows)
 
+    diagnostics_rows = []
+    for t in T
+        scheme_name = get(data.formation_by_window, t, "default")
+        if !haskey(data.formation_catalog, scheme_name)
+            error("Missing scheme '$scheme_name' for window $t in formation catalog.")
+        end
+
+        counts = data.formation_catalog[scheme_name]
+        for (pos, required_count) in counts
+            players_in_pos = [j for j in J if pos_groups[j] == pos]
+            starters_count = sum(round(Int, value(model[:y][j, t])) for j in players_in_pos)
+
+            push!(diagnostics_rows, (
+                window = t,
+                formation_scheme = scheme_name,
+                pos_group = pos,
+                required_count = required_count,
+                actual_starters = starters_count,
+                slack_titular = 0.0
+            ))
+        end
+    end
+
+    df_formation_diagnostics = DataFrame(diagnostics_rows)
+
     verbose && println("✅ Solution extracted successfully!")
 
-    return ModelResults(model, obj_value, solve_time, df_decisions, df_budget)
+    return ModelResults(model, obj_value, solve_time, df_decisions, df_budget, df_formation_diagnostics)
 end
 
 # =============================================================================
@@ -431,10 +486,12 @@ function export_results(results::ModelResults, data::ModelData, output_dir::Stri
 
     CSV.write("$output_dir/squad_decisions.csv", df_output)
     CSV.write("$output_dir/budget_evolution.csv", results.budget_evolution)
+    CSV.write("$output_dir/formation_diagnostics.csv", results.formation_diagnostics)
 
     println("\n💾 Results exported to '$output_dir/':")
     println("   • squad_decisions.csv")
     println("   • budget_evolution.csv")
+    println("   • formation_diagnostics.csv")
 
     return df_output
 end
