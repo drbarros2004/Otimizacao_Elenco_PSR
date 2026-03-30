@@ -233,24 +233,6 @@ function compare_windows(decisions_path::String, window1::Int, window2::Int)
     end
 end
 
-"""
-    export_starters_by_window(decisions_path::String, output_path::String="output/starters_summary.csv")
-
-Creates a simplified CSV with just the starters for each window.
-"""
-function export_starters_by_window(decisions_path::String, output_path::String="output/starters_summary.csv")
-    df = CSV.read(decisions_path, DataFrame)
-    starters = filter(r -> r.is_starter == 1, df)
-
-    # Sort for better readability
-    sort!(starters, [:window, :pos_group, order(:ovr, rev=true)])
-
-    CSV.write(output_path, starters)
-    println("✅ Starters summary saved to $output_path")
-
-    return starters
-end
-
 # =============================================================================
 # QUICK START
 # =============================================================================
@@ -266,16 +248,13 @@ function quick_analysis()
         analyze_squad_decisions()
         analyze_budget_evolution()
 
-        # Export starters
-        export_starters_by_window("output/squad_decisions.csv")
-
         println("\n" * "="^70)
         println("✅ ANALYSIS COMPLETE!")
         println("="^70)
         println("\nGenerated files:")
         println("   • output/squad_decisions.csv    - Full decision matrix")
         println("   • output/budget_evolution.csv   - Financial tracking")
-        println("   • output/starters_summary.csv   - Starting XI per window")
+        println("   • output/formation_diagnostics.csv - Tactical diagnostics")
 
     catch e
         println("\n❌ Error during analysis: $e")

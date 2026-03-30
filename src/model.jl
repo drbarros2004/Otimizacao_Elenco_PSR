@@ -469,6 +469,7 @@ function solve_model(model::Model, data::ModelData, params::ModelParameters; ver
                 formation_scheme = formation_scheme,
                 in_squad = x_val,
                 is_starter = y_val,
+                starter_in_window = y_val,
                 bought = b_val,
                 sold = s_val,
                 ovr = data.ovr_map[(j, t)],

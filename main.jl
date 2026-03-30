@@ -290,7 +290,7 @@ function run_pipeline(num_windows::Int)
     export_analysis(df, ovr_map, value_map, cost_map, num_windows)
 
     println("="^50)
-    println("✅ Pipeline finished! Master report saved in 'data/processed/master_audit.csv'.")
+    println("✅ Pipeline finished! Unified report saved in 'data/processed/player_window_audit.csv'.")
 
     return df, ovr_map, value_map, cost_map, growth_potential_map, wage_map
 end
@@ -541,7 +541,7 @@ function main()
         println("\n📊 Data pipeline completed successfully.")
         println("   Generated files:")
         println("   • data/processed/processed_player_data.csv")
-        println("   • data/processed/master_audit.csv")
+        println("   • data/processed/player_window_audit.csv")
         println("\n💡 To run optimization, install Gurobi:")
         println("   1. Get academic license: https://www.gurobi.com/academia/")
         println("   2. Install Gurobi.jl: julia -e 'using Pkg; Pkg.add(\"Gurobi\"); Pkg.build(\"Gurobi\")'")

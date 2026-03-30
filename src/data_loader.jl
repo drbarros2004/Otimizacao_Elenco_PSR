@@ -6,6 +6,7 @@ include("utils.jl")
 const RAW_BASE_PATH = "data/raw/player_stats.csv"
 const RAW_CUSTOM_PATH = "data/raw/stats_brasileirao_with_correct_teams.csv"
 const PROCESSED_OUTPUT_PATH = "data/processed/processed_player_data.csv"
+const PLAYER_WINDOW_AUDIT_PATH = "data/processed/player_window_audit.csv"
 const MARKET_CONFIG_PATH = "config/market_settings.toml"
 
 # Column mapping from the SoFIFA Scraper
@@ -301,7 +302,7 @@ end
 """
     export_analysis(df_players::DataFrame, ovr_map::Dict, value_map::Dict, cost_map::Dict, num_windows::Int)
 
-Creates a unified 'master_audit.csv' with separate columns for League Multiplier 
+Creates a unified player-window audit report with separate columns for League Multiplier 
 and IR Bonus for detailed financial transparency.
 """
 function export_analysis(df_players::DataFrame, ovr_map::Dict, value_map::Dict, cost_map::Dict, num_windows::Int)
@@ -353,7 +354,20 @@ function export_analysis(df_players::DataFrame, ovr_map::Dict, value_map::Dict, 
     end
 
     df_master = DataFrame(analysis_rows)
-    CSV.write("data/processed/master_audit.csv", df_master)
-    println("✅ Master audit saved with financial breakdown.")
+    CSV.write(PLAYER_WINDOW_AUDIT_PATH, df_master)
+
+    # Remove legacy artifacts now covered by the unified player-window audit.
+    legacy_paths = [
+        "data/processed/master_audit.csv",
+        "data/processed/market_analysis.csv",
+        "data/processed/evolution_analysis.csv"
+    ]
+    for path in legacy_paths
+        if isfile(path)
+            rm(path; force=true)
+        end
+    end
+
+    println("✅ Player-window audit saved with financial breakdown.")
     return df_master
 end
