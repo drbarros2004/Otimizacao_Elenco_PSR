@@ -51,10 +51,10 @@ window_3 = "442"
 window_4 = "442"
 
 [objective]
-weight_quality = 0.85
-weight_potential = 0.15
+weight_quality = 0.75
+weight_potential = 0.25
 decay_quimica = 0.5
-peso_asset = 600.0 #0.5
-peso_performance = 2000.0 #3
-bonus_entrosamento = 400.0
+peso_asset = 600.0 
+peso_performance = 2000.0 
+bonus_entrosamento = 100.0
 risk_appetite = 0.001
