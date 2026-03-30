@@ -8,7 +8,7 @@ import os
 sns.set_theme(style="whitegrid")
 plt.rcParams['figure.dpi'] = 150
 
-def load_master_data(path="../data/processed/master_audit.csv"):
+def load_player_window_audit(path="../data/processed/player_window_audit.csv"):
     """Carrega os dados e valida a existência do arquivo."""
     if not os.path.exists(path):
         raise FileNotFoundError(f"❌ Arquivo {path} não encontrado. Verifique se o pipeline em Julia foi executado.")
@@ -65,7 +65,8 @@ def plot_cost_comparison(df, target_players, output_dir="viz/"):
     print("💰 Gerando gráfico comparativo com breakdown de custos...")
     
     df_now = df[(df['window'] == 0) & (df['name'].isin(target_players))].copy()
-    if df_now.empty: return
+    if df_now.empty:
+        return
 
     df_melted = df_now.melt(
         id_vars=['name', 'league', 'league_mult', 'ir_bonus', 'rep_multiplier'],
@@ -118,7 +119,7 @@ def plot_cost_comparison(df, target_players, output_dir="viz/"):
 
 def main():
     try:
-        df = load_master_data()
+        df = load_player_window_audit()
         
         # DICA: Verifique se esses nomes estão EXATAMENTE assim no seu CSV
         # Se você fez scraping novo, talvez os nomes tenham mudado ligeiramente.
@@ -128,15 +129,15 @@ def main():
             "Jorge Luiz Frello Filho": "Veterano"
         }
 
-        alvos_custo = [ "Breno de Souza Bidon", "Samuel Dias Lino", "Jorge Luiz Frello Filho"]
+        # Reaproveita os mesmos jogadores definidos em `alvos`
+        alvos_custo = list(alvos.keys())
         
-    
         plot_ovr_evolution(df, alvos)
         plot_cost_comparison(df, alvos_custo)
         
         print("✅ Processo concluído.")
         
-    except Exception as e:
+    except Exception:
         import traceback
         traceback.print_exc()
 
