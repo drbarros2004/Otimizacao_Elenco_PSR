@@ -7,6 +7,10 @@ reputation = 1.0
 default_league_reputation = 0.8 
 # How much each IR star raises the market value
 ir_multiplier = 0.1 
+# Players with wage <= threshold are treated as free agents for wage inference
+free_agent_wage_threshold = 1000.0
+# Extra salary demand because transfer fee was zero/very low (1.0 disables)
+free_agent_wage_multiplier = 10.0
 
 [leagues]
 # European Elite Leagues

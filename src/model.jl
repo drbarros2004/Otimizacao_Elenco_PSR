@@ -231,13 +231,33 @@ function build_squad_optimization_model(data::ModelData, params::ModelParameters
         if t > first(T)
             revenue = (t % 2 == 0) ? params.seasonal_revenue : 0.0
 
+            # Calculate signing costs with free agent multiplier
+            # Free agents (cost < 100k) demand higher signing bonuses
+            signing_costs = AffExpr(0.0)
+            for j in J
+                cost = data.cost_map[(j, t)]
+                wage = data.wage_map[(j, t)]
+                ovr = data.ovr_map[(j, t)]
+
+                # Determine if player is a free agent
+                is_free_agent = (cost < 100_000)
+
+                if is_free_agent
+                    # Apply OVR-based multiplier for free agents
+                    multiplier = get_free_agent_signing_multiplier(ovr)
+                    signing_cost = wage * 52 * params.signing_bonus_rate * multiplier
+                else
+                    # Normal signing bonus for regular transfers
+                    signing_cost = wage * 52 * params.signing_bonus_rate
+                end
+
+                add_to_expression!(signing_costs, signing_cost * buy[j, t-1])
+            end
+
             @constraint(model,
                 budget[t] == budget[t-1]
-                    - sum(
-                        (1 + params.transaction_cost_buy) * data.cost_map[(j,t)] * buy[j,t-1] +
-                        data.wage_map[(j,t)] * 52 * params.signing_bonus_rate * buy[j,t-1]
-                        for j in J
-                    )
+                    - sum((1 + params.transaction_cost_buy) * data.cost_map[(j,t)] * buy[j,t-1] for j in J)
+                    - signing_costs
                     + sum((1 - params.transaction_cost_sell) * data.value_map[(j,t)] * sell[j,t-1] for j in J)
                     + revenue
                     + budget_deficit[t]

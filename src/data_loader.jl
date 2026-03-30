@@ -249,17 +249,54 @@ end
 """
 Generates a map of wages (annual salary in EUR) for all players across windows.
 For simplicity, wage is assumed constant unless the player significantly improves.
+
+For free agents (players with wage = 0 or very low), this function infers
+realistic wages based on the OVR distribution of top players in the dataset.
 """
 function generate_wage_map(df_players::DataFrame, ovr_map::Dict, num_windows::Int)
     println("Generating Wage map...")
+
+    # Load optional market settings for free-agent wage inflation
+    free_agent_wage_threshold = 1000.0
+    free_agent_wage_multiplier = 1.0
+
+    if isfile(MARKET_CONFIG_PATH)
+        market_cfg = TOML.parsefile(MARKET_CONFIG_PATH)
+        market_settings = get(market_cfg, "market_settings", Dict{String,Any}())
+
+        free_agent_wage_threshold = Float64(get(market_settings, "free_agent_wage_threshold", free_agent_wage_threshold))
+        free_agent_wage_multiplier = Float64(get(market_settings, "free_agent_wage_multiplier", free_agent_wage_multiplier))
+
+        if free_agent_wage_multiplier <= 0
+            @warn "Invalid free_agent_wage_multiplier=$free_agent_wage_multiplier. Falling back to 1.0"
+            free_agent_wage_multiplier = 1.0
+        end
+    end
+
+    println("   Free-agent wage threshold: €$(round(Int, free_agent_wage_threshold))")
+    println("   Free-agent wage multiplier: x$(round(free_agent_wage_multiplier, digits=2))")
+
+    # Infer realistic wages for free agents based on OVR distribution
+    wage_by_ovr = infer_free_agent_wages(df_players)
 
     wage_map = Dict{Tuple{Int, Int}, Float64}()
 
     for row in eachrow(df_players)
         p_id = row.player_id
-        # Input schema uses `wage` from SoFIFA scraper.
-        base_wage = Float64(coalesce(row.wage, 50_000.0))  # Default €50k/year if missing
         base_ovr = row.overall_rating
+        raw_wage = Float64(coalesce(row.wage, 0.0))
+        is_free_agent = raw_wage <= free_agent_wage_threshold
+
+        # Determine base wage:
+        # If player has valid wage (>1000), use it
+        # If player is a free agent (wage ≤ 1000), infer from OVR
+        base_wage = if !is_free_agent
+            raw_wage
+        else
+            # Free agent - inferred wage with configurable inflation multiplier
+            inferred = get(wage_by_ovr, Int(round(base_ovr)), base_ovr * 2000)
+            inferred * free_agent_wage_multiplier
+        end
 
         for w in 0:num_windows
             current_ovr = ovr_map[(p_id, w)]
@@ -272,7 +309,7 @@ function generate_wage_map(df_players::DataFrame, ovr_map::Dict, num_windows::In
         end
     end
 
-    println("✅ Wage map generated.")
+    println("✅ Wage map generated (with inferred wages for free agents).")
     return wage_map
 end
 
