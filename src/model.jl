@@ -51,6 +51,9 @@ struct ModelParameters
     transaction_cost_buy::Float64
     transaction_cost_sell::Float64
     signing_bonus_rate::Float64
+    salary_cap_multiplier_initial::Float64
+    salary_cap_window_factor::Float64
+    salary_cap_penalty::Float64
     formation_catalog::Dict{String, Dict{String, Int}}
     formation_by_window::Dict{Int, String}
     weight_quality::Float64
@@ -70,6 +73,9 @@ struct ModelParameters
         transaction_cost_buy::Float64 = 0.12,
         transaction_cost_sell::Float64 = 0.10,
         signing_bonus_rate::Float64 = 0.5,
+        salary_cap_multiplier_initial::Float64 = 1.2,
+        salary_cap_window_factor::Float64 = 1.0,
+        salary_cap_penalty::Float64 = P_SALARIO,
         formation_catalog::Dict{String, Dict{String, Int}} = Dict(
             "default" => Dict( # 4-3-3
                 "GK" => 1,
@@ -93,6 +99,7 @@ struct ModelParameters
     )
         new(initial_budget, seasonal_revenue, max_squad_size, min_squad_size,
             friction_penalty, transaction_cost_buy, transaction_cost_sell, signing_bonus_rate,
+            salary_cap_multiplier_initial, salary_cap_window_factor, salary_cap_penalty,
             formation_catalog, formation_by_window,
             weight_quality, weight_potential, decay_quimica,
             peso_asset, peso_performance, bonus_entrosamento, risk_appetite)
@@ -273,6 +280,23 @@ function build_squad_optimization_model(data::ModelData, params::ModelParameters
         @constraint(model, sum(x[j,t] for j in J) >= params.min_squad_size)
     end
 
+    # ==== SALARY CAP (SOFT) ====
+    verbose && println("  ├─ Salary cap constraints (soft)...")
+
+    # Baseline payroll comes from the initial squad at window 0.
+    initial_window = first(T)
+    initial_payroll = sum(data.wage_map[(j, initial_window)] for j in data.initial_squad)
+    salary_cap_per_window = initial_payroll * params.salary_cap_multiplier_initial * params.salary_cap_window_factor
+
+    verbose && println("  │  Initial payroll baseline: €$(round(initial_payroll / 1e6, digits=2))M")
+    verbose && println("  │  Salary cap per window: €$(round(salary_cap_per_window / 1e6, digits=2))M")
+
+    for t in T
+        @constraint(model,
+            sum(data.wage_map[(j,t)] * x[j,t] for j in J) <= salary_cap_per_window + slack_salario[t]
+        )
+    end
+
     # ==== FORMATION (EXACT) ====
     verbose && println("  ├─ Tactical formation constraints (exact)...")
 
@@ -383,7 +407,7 @@ function build_squad_optimization_model(data::ModelData, params::ModelParameters
 
     # 5. Soft constraint penalties
     for t in T
-        add_to_expression!(obj_terms, -P_SALARIO * slack_salario[t])
+        add_to_expression!(obj_terms, -params.salary_cap_penalty * slack_salario[t])
         add_to_expression!(obj_terms, -P_CAIXA * budget_deficit[t])
     end
 

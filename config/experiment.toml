@@ -16,6 +16,10 @@ friction_penalty = 10.0
 transaction_cost_buy = 0.15
 transaction_cost_sell = 0.12
 signing_bonus_rate = 0.5
+# Soft salary-cap controls based on initial squad payroll
+salary_cap_multiplier_initial = 1.0
+salary_cap_window_factor = 1.0
+salary_cap_penalty = 100000.0
 
 [formation_catalog.433]
 # Exact starters by position for each tactical scheme
@@ -50,7 +54,7 @@ window_4 = "442"
 weight_quality = 0.85
 weight_potential = 0.15
 decay_quimica = 0.5
-peso_asset = 400.0 #0.5
+peso_asset = 600.0 #0.5
 peso_performance = 2000.0 #3
 bonus_entrosamento = 400.0
 risk_appetite = 0.001
