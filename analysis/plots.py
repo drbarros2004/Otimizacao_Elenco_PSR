@@ -123,12 +123,12 @@ def main():
         # DICA: Verifique se esses nomes estão EXATAMENTE assim no seu CSV
         # Se você fez scraping novo, talvez os nomes tenham mudado ligeiramente.
         alvos = {
-            "Wallace Yan de Souza Barreto": "Jovem",
+            "Breno de Souza Bidon": "Jovem",
             "Samuel Dias Lino": "Auge",
             "Jorge Luiz Frello Filho": "Veterano"
         }
 
-        alvos_custo = [ "Wallace Yan de Souza Barreto", "Samuel Dias Lino", "Jorge Luiz Frello Filho"]
+        alvos_custo = [ "Breno de Souza Bidon", "Samuel Dias Lino", "Jorge Luiz Frello Filho"]
         
     
         plot_ovr_evolution(df, alvos)
