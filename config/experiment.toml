@@ -4,15 +4,15 @@ num_windows = 4
 
 [optimization]
 # Financial setup
-initial_budget = 40000000.0
-seasonal_revenue = 10000000.0
+initial_budget = 30000000.0
+seasonal_revenue = 5000000.0
 # Options: "top_value" or "team:<Club Name>"
-initial_squad_strategy = "team:Botafogo"
+initial_squad_strategy = "team:Flamengo"
 
 [constraints]
 max_squad_size = 30
 min_squad_size = 18
-friction_penalty = 12.0
+friction_penalty = 10.0
 transaction_cost_buy = 0.15
 transaction_cost_sell = 0.12
 signing_bonus_rate = 0.5
@@ -47,10 +47,10 @@ window_3 = "442"
 window_4 = "442"
 
 [objective]
-weight_quality = 0.9
-weight_potential = 0.1
+weight_quality = 0.85
+weight_potential = 0.15
 decay_quimica = 0.5
-peso_asset = 0.2
-peso_performance = 1.0
-bonus_entrosamento = 2.0
-risk_appetite = 0.1
+peso_asset = 400.0 #0.5
+peso_performance = 2000.0 #3
+bonus_entrosamento = 400.0
+risk_appetite = 0.001
