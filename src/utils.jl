@@ -37,19 +37,28 @@ Deterministic evolution logic where age directly influences the speed of growth 
 function evolution_step(ovr::Float64, pot::Float64, age::Int, value::Float64, window_idx::Int)
     # 1. Age increments every 2 windows
     current_age = (window_idx > 0 && window_idx % 2 != 0) ? age + 1 : age
+
+    # Tunable growth controls
+    growth_intercept = 0.34        # Base growth before age discount
+    growth_age_slope = 0.0095       # How much growth decreases per age year
+    min_growth_coeff = 0.065       # Floor for late growth phase (<30)
+    youth_bonus_age_limit = 29     # Applies bonus up to this age (inclusive)
+    youth_bonus_multiplier = 1.65  # Extra acceleration for younger players
     
     delta = 0.0
     status = "Stable"
 
     if current_age < 30
         # --- GROWTH PHASE ---
-        # Coefficient decreases linearly from ~0.15 at age 16 to ~0.02 at age 29
-        # Formula: max(0.02, 0.25 - 0.008 * current_age)
-        growth_coeff = max(0.02, 0.28 - (0.01 * current_age))
+        # Coefficient decreases with age and is bounded by a minimum floor.
+        growth_coeff = max(min_growth_coeff, growth_intercept - (growth_age_slope * current_age))
+
+        # Additional youth boost to accelerate early-career development.
+        youth_bonus = current_age <= youth_bonus_age_limit ? youth_bonus_multiplier : 1.0
         
         # Growth is proportional to the potential gap
         gap = max(0.0, pot - ovr)
-        delta = gap * growth_coeff
+        delta = gap * growth_coeff * youth_bonus
         status = "Growth"
     else
         # --- DECAY PHASE ---
