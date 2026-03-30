@@ -45,19 +45,19 @@ Compared to the earlier baseline, the current version includes:
 │   │   └── stats_brasileirao_with_correct_teams.csv
 │   └── processed/
 │       ├── processed_player_data.csv  # Cleaned player base
-│       ├── master_audit.csv           # Technical + financial audit table
-│       ├── market_analysis.csv        # Additional analysis artifact
-│       └── evolution_analysis.csv     # Optional evolution export
+│       └── player_window_audit.csv    # Unified player-window technical + financial audit
 ├── output/
 │   ├── squad_decisions.csv            # Player-level decisions per window
 │   ├── budget_evolution.csv           # Budget path and deficits
-│   └── starters_summary.csv           # Simplified starter export (analysis script)
+│   └── formation_diagnostics.csv      # Tactical scheme constraints and slacks
 ├── src/
 │   ├── data_loader.jl                 # Ingestion, cleaning, map generation, audit export
 │   ├── utils.jl                       # Evolution and market multiplier logic
 │   └── model.jl                       # Complete JuMP/Gurobi MILP model
 ├── analysis/
 │   ├── plots.py                       # Optional Python plotting utilities
+│   ├── streamlit_dashboard.py         # Interactive pitch dashboard (Streamlit)
+│   ├── requirements-streamlit.txt     # Python dependencies for dashboard
 │   └── viz/                           # Generated figures
 └── scraper/                           # Data collection scripts (Python)
 ```
@@ -152,7 +152,7 @@ Where the multiplier reflects:
 
 The pipeline exports a consolidated technical/financial audit table:
 
-- `data/processed/master_audit.csv`
+- `data/processed/player_window_audit.csv`
 
 ## Configuration
 
@@ -165,7 +165,8 @@ Main experiment parameters are defined in `config/experiment.toml`:
   - `top_value`
   - `team:<Club Name>` (example: `team:Flamengo`)
 - `constraints.*` (squad limits, transaction costs, penalties)
-- `formation.*` positional starter bounds
+- `formation_catalog.<scheme>.*` exact starter counts by tactical scheme
+- `formation_plan.*` active tactical scheme per window
 - `objective.*` weights and chemistry/risk parameters
 
 ## How to Run
@@ -214,13 +215,9 @@ This script prints:
 - Transfers (bought/sold) and totals
 - Budget trajectory and deficits
 
-And exports:
-
-- `output/starters_summary.csv`
-
 ## Optional Python Visualization
 
-`analysis/plots.py` can generate visualization figures from `master_audit.csv`.
+`analysis/plots.py` can generate visualization figures from `player_window_audit.csv`.
 
 Typical dependencies:
 
@@ -269,16 +266,27 @@ results = run_optimization(
 ### Data Outputs
 
 - `data/processed/processed_player_data.csv`
-- `data/processed/master_audit.csv`
+- `data/processed/player_window_audit.csv`
 
 ### Optimization Outputs
 
 - `output/squad_decisions.csv`
 - `output/budget_evolution.csv`
+- `output/formation_diagnostics.csv`
 
-### Analysis Outputs
+### Optional Interactive Dashboard (Streamlit)
 
-- `output/starters_summary.csv`
+Install dashboard dependencies:
+
+```bash
+pip install -r analysis/requirements-streamlit.txt
+```
+
+Run dashboard:
+
+```bash
+streamlit run analysis/streamlit_dashboard.py
+```
 
 ## Tech Stack
 
