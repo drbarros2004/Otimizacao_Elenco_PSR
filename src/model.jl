@@ -71,7 +71,7 @@ struct ModelParameters
         transaction_cost_sell::Float64 = 0.10,
         signing_bonus_rate::Float64 = 0.5,
         formation_catalog::Dict{String, Dict{String, Int}} = Dict(
-            "default" => Dict(
+            "default" => Dict( # 4-3-3
                 "GK" => 1,
                 "CB" => 2,
                 "RB" => 1,
@@ -144,7 +144,7 @@ end
 # =============================================================================
 
 function build_squad_optimization_model(data::ModelData, params::ModelParameters; verbose::Bool=true)
-    verbose && println("\n🏗️  Building Complete Multi-Period Squad Optimization Model...")
+    verbose && println("\n Building Complete Multi-Period Squad Optimization Model...")
 
     model = Model(Gurobi.Optimizer)
     set_optimizer_attribute(model, "TimeLimit", 600)  
@@ -201,6 +201,8 @@ function build_squad_optimization_model(data::ModelData, params::ModelParameters
             @constraint(model, sell[j, first(T)] == 0)
         else
             @constraint(model, x[j, first(T)] == 0)
+            @constraint(model, buy[j, first(T)] == 0)  # Cannot buy in initial window
+            @constraint(model, sell[j, first(T)] == 0) # Cannot sell what you don't have
         end
     end
 
@@ -368,7 +370,7 @@ function build_squad_optimization_model(data::ModelData, params::ModelParameters
     # 6. Terminal value
     t_final = last(T)
     valor_elenco_final = sum(data.value_map[(j, t_final)] * x[j, t_final] for j in J)
-    add_to_expression!(obj_terms, 1.0 * valor_elenco_final)
+    add_to_expression!(obj_terms, 0.001 * valor_elenco_final)
     add_to_expression!(obj_terms, params.risk_appetite * budget[t_final])
 
     @objective(model, Max, obj_terms)
