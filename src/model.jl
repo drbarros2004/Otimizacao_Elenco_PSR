@@ -526,9 +526,17 @@ end
 function export_results(results::ModelResults, data::ModelData, output_dir::String="output")
     mkpath(output_dir)
 
-    df_output = leftjoin(results.squad_decisions,
-                         data.players[:, [:player_id, :name, :pos_group]],
-                         on=:player_id)
+    player_meta = select(
+        data.players,
+        :player_id,
+        :name,
+        :pos_group,
+        :club_name,
+        :club_league_name
+    )
+    rename!(player_meta, :club_name => :origin_club, :club_league_name => :origin_league)
+
+    df_output = leftjoin(results.squad_decisions, player_meta, on=:player_id)
 
     CSV.write("$output_dir/squad_decisions.csv", df_output)
     CSV.write("$output_dir/budget_evolution.csv", results.budget_evolution)
