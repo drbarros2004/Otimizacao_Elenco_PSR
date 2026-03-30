@@ -16,11 +16,6 @@ using JuMP, Gurobi, DataFrames, CSV
 const S_MAX = 10.0         
 const S_INICIAL = 5.0      
 const BONUS_INCREMENTO = 0.5  
-const DECAY_QUIMICA_DEFAULT = 0.70  
-
-const PESO_ASSET = 0.2      
-const PESO_PERFORMANCE = 1.0  
-const BONUS_ENTROSAMENTO = 2.0  
 
 const BIG_M = 1000.0
 
@@ -91,10 +86,10 @@ struct ModelParameters
         formation_by_window::Dict{Int, String} = Dict(0 => "default"),
         weight_quality::Float64 = 0.80,
         weight_potential::Float64 = 0.15,
-        decay_quimica::Float64 = DECAY_QUIMICA_DEFAULT,
-        peso_asset::Float64 = PESO_ASSET,
-        peso_performance::Float64 = PESO_PERFORMANCE,
-        bonus_entrosamento::Float64 = BONUS_ENTROSAMENTO,
+        decay_quimica::Float64 = 0.70,
+        peso_asset::Float64 = 0.2,
+        peso_performance::Float64 = 1.0,
+        bonus_entrosamento::Float64 = 2.0,
         risk_appetite::Float64 = 1.0
     )
         new(initial_budget, seasonal_revenue, max_squad_size, min_squad_size,

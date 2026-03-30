@@ -107,9 +107,6 @@ function generate_projections(df_players::DataFrame, num_windows::Int)
     value_map = Dict{Tuple{Int, Int}, Float64}()
     growth_potential_map = Dict{Tuple{Int, Int}, Float64}()
 
-    # Set seed for reproducibility
-    Random.seed!(42)
-
     for row in eachrow(df_players)
         p_id = row.player_id
 
@@ -162,53 +159,6 @@ function generate_projections(df_players::DataFrame, num_windows::Int)
     return ovr_map, value_map, growth_potential_map
 end
 
-"""
-Sequential simulation: Window(T) depends on Window(T-1).
-"""
-function export_evolution_analysis(df_players::DataFrame, num_windows::Int)
-    println("Running sequential simulation for $num_windows windows...")
-    Random.seed!(42) # For reproducibility
-    
-    analysis_rows = []
-
-    for row in eachrow(df_players)
-
-        # Initial State (Window 0)
-        curr_ovr = Float64(row.overall_rating)
-        curr_val = Float64(row.value)
-        curr_age = Int(row.age)
-        curr_pot = Float64(row.potential)
-        
-        # Save Window 0
-        push!(analysis_rows, (
-            player_id = row.player_id, name = row.name, 
-            window = 0, age = curr_age, 
-            ovr = round(curr_ovr, digits=1), value = round(curr_val, digits=2),
-            status = "Initial"
-        ))
-
-        # Simulate step-by-step
-        for w in 1:num_windows
-            curr_ovr, curr_val, curr_age, status = evolution_step(
-                curr_ovr, curr_pot, curr_age, curr_val, w
-            )
-            
-            push!(analysis_rows, (
-                player_id = row.player_id, name = row.name, 
-                window = w, age = curr_age, 
-                ovr = round(curr_ovr, digits=1), value = round(curr_val, digits=2),
-                status = status
-            ))
-        end
-    end
-
-    df_analysis = DataFrame(analysis_rows)
-    CSV.write("data/processed/evolution_analysis.csv", df_analysis)
-    println("Sequential analysis saved to data/processed/evolution_analysis.csv")
-    return df_analysis
-end
-
-# TODO: VERIFICAR SE ESSA NOVA VERSÃO ESTÁ CORRETA
 """
 Maps SoFIFA position strings to granular tactical position groups.
 Returns the player's primary position group.

@@ -283,10 +283,10 @@ function run_pipeline(num_windows::Int)
     # STEP 3: Market Reputation (Acquisition Costs)
     cost_map = generate_cost_map(df, value_map, num_windows)
 
-    # STEP 5: Wage Map
+    # STEP 4: Wage Map
     wage_map = generate_wage_map(df, ovr_map, num_windows)
 
-    # STEP 6: Unified Analytical Export
+    # STEP 5: Unified Analytical Export
     export_analysis(df, ovr_map, value_map, cost_map, num_windows)
 
     println("="^50)
