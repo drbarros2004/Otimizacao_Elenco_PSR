@@ -10,9 +10,7 @@ function build_stochastic_squad_optimization_model(
     verbose && println("\n Building Stochastic Node-Based Squad Optimization Model...")
 
     model = Model(Gurobi.Optimizer)
-    set_optimizer_attribute(model, "TimeLimit", 600)
-    set_optimizer_attribute(model, "MIPGap", 0.01)
-    !verbose && set_optimizer_attribute(model, "OutputFlag", 0)
+    configure_solver!(model; verbose=verbose)
 
     # Extract data
     players = data.players
@@ -310,183 +308,27 @@ end
 # SOLVING
 # =============================================================================
 
-function tree_to_dataframe(data::ModelDataStochastic)
-    leaf_set = Set(data.leaf_nodes)
-    rows = []
-
-    for n in data.node_ids
-        node = data.tree.nodes[n]
-        parent = data.parent_by_node[n]
-
-        push!(rows, (
-            node_id = n,
-            parent_id = isnothing(parent) ? missing : parent,
-            stage = data.stage_by_node[n],
-            branch_probability = node.branch_probability,
-            cumulative_probability = data.probability_by_node[n],
-            tactical_scheme = node.tactical_scheme,
-            is_leaf = n in leaf_set,
-            children_count = length(node.children_ids),
-            path = join(string.(data.path_by_node[n]), "->")
-        ))
-    end
-
-    return DataFrame(rows)
-end
-
 function solve_stochastic_model(
     model::Model,
     data::ModelDataStochastic,
     params::ModelParameters;
     verbose::Bool=true
 )
-    verbose && println("\n🚀 Solving stochastic node-based optimization model...")
-    verbose && println("="^60)
+    summary = run_solver_with_status!(
+        model;
+        model_label="stochastic node-based optimization model",
+        verbose=verbose,
+        allow_time_limit=true,
+        diagnose_conflict=true
+    )
 
-    start_time = time()
-    optimize!(model)
-    solve_time = time() - start_time
-
-    status = termination_status(model)
-    verbose && println("\n📌 Termination Status: $status")
-
-    if status ∉ [MOI.OPTIMAL, MOI.LOCALLY_SOLVED, MOI.TIME_LIMIT]
-        error("Stochastic model did not solve successfully. Status: $status")
-    end
-
-    obj_value = objective_value(model)
-    verbose && println("🎯 Objective Value: $(round(obj_value, digits=2))")
-    verbose && println("⏱️  Solve Time: $(round(solve_time, digits=2))s")
     verbose && println("\n📦 Extracting stochastic solution...")
 
-    J = Int.(data.players.player_id)
-    N = data.node_ids
-    pos_groups = Dict(Int(row.player_id) => String(row.pos_group) for row in eachrow(data.players))
-
-    decision_rows = []
-    for n in N
-        parent = data.parent_by_node[n]
-        parent_id = isnothing(parent) ? missing : parent
-        stage_n = data.stage_by_node[n]
-        prob_n = data.probability_by_node[n]
-        node = data.tree.nodes[n]
-        path_id = join(string.(data.path_by_node[n]), "->")
-
-        for j in J
-            x_val = round(Int, value(model[:x][j, n]))
-            y_val = round(Int, value(model[:y][j, n]))
-            b_val = round(Int, value(model[:buy][j, n]))
-            s_val = round(Int, value(model[:sell][j, n]))
-
-            if x_val == 1 || b_val == 1 || s_val == 1
-                push!(decision_rows, (
-                    node_id = n,
-                    parent_id = parent_id,
-                    stage = stage_n,
-                    cumulative_probability = prob_n,
-                    path_id = path_id,
-                    tactical_scheme = node.tactical_scheme,
-                    player_id = j,
-                    in_squad = x_val,
-                    is_starter = y_val,
-                    starter_in_node = y_val,
-                    bought = b_val,
-                    sold = s_val,
-                    ovr = data.ovr_node_map[(j, n)],
-                    market_value = data.value_node_map[(j, n)],
-                    acquisition_cost = data.cost_node_map[(j, n)],
-                    wage = data.wage_node_map[(j, n)]
-                ))
-            end
-        end
-    end
-    df_decisions = DataFrame(decision_rows)
-
-    budget_rows = []
-    for n in N
-        parent = data.parent_by_node[n]
-        parent_id = isnothing(parent) ? missing : parent
-
-        push!(budget_rows, (
-            node_id = n,
-            parent_id = parent_id,
-            stage = data.stage_by_node[n],
-            cumulative_probability = data.probability_by_node[n],
-            cash_balance = value(model[:budget][n]),
-            deficit = value(model[:budget_deficit][n])
-        ))
-    end
-    df_budget = DataFrame(budget_rows)
-
-    diagnostics_rows = []
-    for n in N
-        stage_n = data.stage_by_node[n]
-        node = data.tree.nodes[n]
-
-        for (pos, required_count) in node.position_requirements
-            players_in_pos = [j for j in J if pos_groups[j] == pos]
-            starters_count = sum(round(Int, value(model[:y][j, n])) for j in players_in_pos)
-
-            push!(diagnostics_rows, (
-                node_id = n,
-                stage = stage_n,
-                tactical_scheme = node.tactical_scheme,
-                pos_group = pos,
-                required_count = required_count,
-                actual_starters = starters_count,
-                slack_titular = 0.0
-            ))
-        end
-    end
-    df_formation_diagnostics = DataFrame(diagnostics_rows)
-    df_tree = tree_to_dataframe(data)
-
-    verbose && println("✅ Stochastic solution extracted successfully!")
-
-    return StochasticModelResults(
+    return extract_stochastic_results(
         model,
-        obj_value,
-        solve_time,
-        df_decisions,
-        df_budget,
-        df_tree,
-        df_formation_diagnostics
+        data;
+        objective_value=summary.objective_value,
+        solve_time=summary.solve_time,
+        verbose=verbose
     )
-end
-
-# =============================================================================
-# EXPORT
-# =============================================================================
-
-function export_stochastic_results(
-    results::StochasticModelResults,
-    data::ModelDataStochastic,
-    output_dir::String="output"
-)
-    mkpath(output_dir)
-
-    player_meta = select(
-        data.players,
-        :player_id,
-        :name,
-        :pos_group,
-        :club_name,
-        :club_league_name
-    )
-    rename!(player_meta, :club_name => :origin_club, :club_league_name => :origin_league)
-
-    df_output = leftjoin(results.node_decisions, player_meta, on=:player_id)
-
-    CSV.write("$output_dir/squad_decisions_nodes.csv", df_output)
-    CSV.write("$output_dir/budget_evolution_nodes.csv", results.budget_evolution)
-    CSV.write("$output_dir/tree_metadata.csv", results.tree_metadata)
-    CSV.write("$output_dir/formation_diagnostics_nodes.csv", results.formation_diagnostics)
-
-    println("\n💾 Stochastic results exported to '$output_dir/':")
-    println("   • squad_decisions_nodes.csv")
-    println("   • budget_evolution_nodes.csv")
-    println("   • tree_metadata.csv")
-    println("   • formation_diagnostics_nodes.csv")
-
-    return df_output
 end

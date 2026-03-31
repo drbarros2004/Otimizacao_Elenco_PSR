@@ -6,9 +6,7 @@ function build_squad_optimization_model(data::ModelData, params::ModelParameters
     verbose && println("\n Building Complete Multi-Period Squad Optimization Model...")
 
     model = Model(Gurobi.Optimizer)
-    set_optimizer_attribute(model, "TimeLimit", 600)  
-    set_optimizer_attribute(model, "MIPGap", 0.01)    
-    !verbose && set_optimizer_attribute(model, "OutputFlag", 0)
+    configure_solver!(model; verbose=verbose)
 
     # Extract data
     players = data.players
@@ -283,114 +281,21 @@ function build_squad_optimization_model(data::ModelData, params::ModelParameters
 end
 
 function solve_model(model::Model, data::ModelData, params::ModelParameters; verbose::Bool=true)
-    verbose && println("\n🚀 Solving optimization model...")
-    verbose && println("="^60)
-
-    start_time = time()
-    optimize!(model)
-    solve_time = time() - start_time
-
-    status = termination_status(model)
-    verbose && println("\n📌 Termination Status: $status")
-
-    if status ∉ [MOI.OPTIMAL, MOI.LOCALLY_SOLVED, MOI.TIME_LIMIT]
-        error("Model did not solve successfully. Status: $status")
-    end
-
-    obj_value = objective_value(model)
-    verbose && println("🎯 Objective Value: $(round(obj_value, digits=2))")
-    verbose && println("⏱️  Solve Time: $(round(solve_time, digits=2))s")
+    summary = run_solver_with_status!(
+        model;
+        model_label="deterministic optimization model",
+        verbose=verbose,
+        allow_time_limit=true,
+        diagnose_conflict=true
+    )
 
     verbose && println("\n📦 Extracting solution...")
 
-    J = data.players.player_id
-    T = data.windows
-    pos_groups = Dict(row.player_id => row.pos_group for row in eachrow(data.players))
-
-    decision_rows = []
-    for j in J, t in T
-        x_val = round(Int, value(model[:x][j, t]))
-        y_val = round(Int, value(model[:y][j, t]))
-        b_val = round(Int, value(model[:buy][j, t]))
-        s_val = round(Int, value(model[:sell][j, t]))
-
-        if x_val == 1 || b_val == 1 || s_val == 1
-            formation_scheme = get(data.formation_by_window, t, "default")
-            push!(decision_rows, (
-                player_id = j,
-                window = t,
-                formation_scheme = formation_scheme,
-                in_squad = x_val,
-                is_starter = y_val,
-                starter_in_window = y_val,
-                bought = b_val,
-                sold = s_val,
-                ovr = data.ovr_map[(j, t)],
-                market_value = data.value_map[(j, t)],
-                acquisition_cost = data.cost_map[(j, t)]
-            ))
-        end
-    end
-
-    df_decisions = DataFrame(decision_rows)
-
-    budget_rows = [(window = t, cash_balance = value(model[:budget][t]),
-                    deficit = value(model[:budget_deficit][t])) for t in T]
-    df_budget = DataFrame(budget_rows)
-
-    diagnostics_rows = []
-    for t in T
-        scheme_name = get(data.formation_by_window, t, "default")
-        if !haskey(data.formation_catalog, scheme_name)
-            error("Missing scheme '$scheme_name' for window $t in formation catalog.")
-        end
-
-        counts = data.formation_catalog[scheme_name]
-        for (pos, required_count) in counts
-            players_in_pos = [j for j in J if pos_groups[j] == pos]
-            starters_count = sum(round(Int, value(model[:y][j, t])) for j in players_in_pos)
-
-            push!(diagnostics_rows, (
-                window = t,
-                formation_scheme = scheme_name,
-                pos_group = pos,
-                required_count = required_count,
-                actual_starters = starters_count,
-                slack_titular = 0.0
-            ))
-        end
-    end
-
-    df_formation_diagnostics = DataFrame(diagnostics_rows)
-
-    verbose && println("✅ Solution extracted successfully!")
-
-    return ModelResults(model, obj_value, solve_time, df_decisions, df_budget, df_formation_diagnostics)
-end
-
-function export_results(results::ModelResults, data::ModelData, output_dir::String="output")
-    mkpath(output_dir)
-
-    player_meta = select(
-        data.players,
-        :player_id,
-        :name,
-        :pos_group,
-        :club_name,
-        :club_league_name
+    return extract_deterministic_results(
+        model,
+        data;
+        objective_value=summary.objective_value,
+        solve_time=summary.solve_time,
+        verbose=verbose
     )
-    rename!(player_meta, :club_name => :origin_club, :club_league_name => :origin_league)
-
-    df_output = leftjoin(results.squad_decisions, player_meta, on=:player_id)
-
-    CSV.write("$output_dir/squad_decisions.csv", df_output)
-    CSV.write("$output_dir/budget_evolution.csv", results.budget_evolution)
-    CSV.write("$output_dir/formation_diagnostics.csv", results.formation_diagnostics)
-
-    println("\n💾 Results exported to '$output_dir/':")
-    println("   • squad_decisions.csv")
-    println("   • budget_evolution.csv")
-    println("   • formation_diagnostics.csv")
-
-    return df_output
 end
