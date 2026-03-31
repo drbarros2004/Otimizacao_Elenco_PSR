@@ -858,47 +858,58 @@ function build_stochastic_squad_optimization_model(
         )
     end
 
-    # ==== INTERMEDIATE OBJECTIVE (NODE-INDEXED) ====
-    # Commit 3 will replace this with expected-value weighting by node probability.
-    verbose && println("  ├─ Building intermediate node-indexed objective...")
+    # ==== EXPECTED-VALUE OBJECTIVE (NODE-INDEXED) ====
+    verbose && println("  ├─ Building expected-value objective...")
 
     obj_terms = AffExpr(0.0)
 
-    for j in J, n in N
-        if n == root_id
+    non_root_nodes = [n for n in N if n != root_id]
+
+    for n in non_root_nodes
+        prob_n = get(data.probability_by_node, n, 0.0)
+        if prob_n <= 0.0
             continue
         end
 
-        score_mercado = (
-            params.weight_quality * data.ovr_node_map[(j,n)] +
-            params.weight_potential * data.growth_potential_node_map[(j,n)]
-        )
-        add_to_expression!(obj_terms, params.peso_asset * score_mercado * x[j,n])
+        for j in J
+            score_mercado = (
+                params.weight_quality * data.ovr_node_map[(j,n)] +
+                params.weight_potential * data.growth_potential_node_map[(j,n)]
+            )
+            add_to_expression!(obj_terms, prob_n * params.peso_asset * score_mercado * x[j,n])
 
-        score_tatico = data.ovr_node_map[(j,n)] * 1.0
-        add_to_expression!(obj_terms, params.peso_performance * score_tatico * y[j,n])
+            score_tatico = data.ovr_node_map[(j,n)] * 1.0
+            add_to_expression!(obj_terms, prob_n * params.peso_performance * score_tatico * y[j,n])
 
-        add_to_expression!(obj_terms, -params.friction_penalty * buy[j,n])
+            add_to_expression!(obj_terms, -prob_n * params.friction_penalty * buy[j,n])
+        end
+
+        add_to_expression!(obj_terms, -prob_n * params.salary_cap_penalty * slack_salario[n])
+        add_to_expression!(obj_terms, -prob_n * P_CAIXA * budget_deficit[n])
     end
 
-    for (i, j) in pairs, n in N
-        if n == root_id
+    for n in non_root_nodes
+        prob_n = get(data.probability_by_node, n, 0.0)
+        if prob_n <= 0.0
             continue
         end
 
         chemistry_multiplier = get(data.chemistry_multiplier_map, n, 1.0)
-        add_to_expression!(obj_terms, params.bonus_entrosamento * chemistry_multiplier * Quimica[(i,j), n])
+        for (i, j) in pairs
+            add_to_expression!(obj_terms, prob_n * params.bonus_entrosamento * chemistry_multiplier * Quimica[(i,j), n])
+        end
     end
 
-    for n in N
-        add_to_expression!(obj_terms, -params.salary_cap_penalty * slack_salario[n])
-        add_to_expression!(obj_terms, -P_CAIXA * budget_deficit[n])
-    end
-
+    # Terminal value is only accounted for leaf nodes, weighted by cumulative probability.
     for n in data.leaf_nodes
+        prob_n = get(data.probability_by_node, n, 0.0)
+        if prob_n <= 0.0
+            continue
+        end
+
         valor_elenco_final = sum(data.value_node_map[(j, n)] * x[j, n] for j in J)
-        add_to_expression!(obj_terms, 0.001 * valor_elenco_final)
-        add_to_expression!(obj_terms, params.risk_appetite * budget[n])
+        add_to_expression!(obj_terms, prob_n * 0.001 * valor_elenco_final)
+        add_to_expression!(obj_terms, prob_n * params.risk_appetite * budget[n])
     end
 
     @objective(model, Max, obj_terms)
