@@ -30,12 +30,10 @@ function calculate_age(dob_value)
 end
 
 """
-    evolution_step(ovr::Float64, pot::Float64, age::Int, value::Float64, window_idx::Int)
-
 Deterministic evolution logic where age directly influences the speed of growth and decay.
 """
 function evolution_step(ovr::Float64, pot::Float64, age::Int, value::Float64, window_idx::Int)
-    # 1. Age increments every 2 windows
+    # Age increments every 2 windows
     current_age = (window_idx > 0 && window_idx % 2 != 0) ? age + 1 : age
 
     # Tunable growth controls
@@ -49,7 +47,6 @@ function evolution_step(ovr::Float64, pot::Float64, age::Int, value::Float64, wi
     status = "Stable"
 
     if current_age < 30
-        # --- GROWTH PHASE ---
         # Coefficient decreases with age and is bounded by a minimum floor.
         growth_coeff = max(min_growth_coeff, growth_intercept - (growth_age_slope * current_age))
 
@@ -61,18 +58,15 @@ function evolution_step(ovr::Float64, pot::Float64, age::Int, value::Float64, wi
         delta = gap * growth_coeff * youth_bonus
         status = "Growth"
     else
-        # --- DECAY PHASE ---
         # Decay accelerates with age. 
-        # A 30-year-old starts at -0.2 per window. 
-        # Formula: -0.2 * (current_age - 29)^0.8 (non-linear acceleration)
         delta = -0.2 * (current_age - 29)
         status = "Decay"
     end
     
-    # 2. Update OVR (Rounded to maintain Int stability in the map)
+    # Update OVR (Rounded to maintain Int, like EA FC)
     new_ovr = clamp(ovr + delta, 40.0, 99.0)
     
-    # 3. Update Market Value (Financial Dynamics)
+    # Update Market Value (Financial Dynamics)
     # Instead of a sharp drop at 28, we use a smooth multiplier 
     # that starts high and crosses 1.0 around age 26-27.
     # Multiplier = 1.2 (young) down to 0.8 (very old)
@@ -86,7 +80,7 @@ function evolution_step(ovr::Float64, pot::Float64, age::Int, value::Float64, wi
 end
 
 """
-    get_market_multiplier(...)
+criar descricao
 """
 function get_market_multiplier(league_name::String, ir_score::Int, market_cfg::Dict)
     buyer_rep = market_cfg["buying_club"]["reputation"]
@@ -208,8 +202,6 @@ function infer_free_agent_wages(df::DataFrame)
 end
 
 """
-    get_free_agent_signing_multiplier(ovr::Int) -> Float64
-
 Returns the signing bonus multiplier for free agents based on their OVR.
 Higher quality free agents demand significantly higher signing bonuses.
 

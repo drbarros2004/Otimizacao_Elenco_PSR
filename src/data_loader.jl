@@ -36,16 +36,13 @@ function load_and_clean_data()
     custom_clubs = Set(
         lowercase.(strip.(collect(skipmissing(df_custom.club_name))))
     )
-
+    
     is_brazilian_league(league) = begin
         if ismissing(league)
             return false
         end
         league_norm = lowercase(strip(String(league)))
-        return occursin("brazil", league_norm) ||
-               occursin("brasileir", league_norm) ||
-               occursin("série a", league_norm) ||
-               occursin("serie a", league_norm)
+        return occursin("serie a", league_norm)
     end
 
     base_keep_mask = map(eachrow(df_base)) do row
