@@ -1,4 +1,4 @@
-using CSV, DataFrames, Dates, TOML
+using CSV, DataFrames, Dates, Random, TOML
 
 include("utils.jl")
 
@@ -7,7 +7,9 @@ const RAW_BASE_PATH = "data/raw/player_stats.csv"
 const RAW_CUSTOM_PATH = "data/raw/stats_brasileirao_with_correct_teams.csv"
 const PROCESSED_OUTPUT_PATH = "data/processed/processed_player_data.csv"
 const PLAYER_WINDOW_AUDIT_PATH = "data/processed/player_window_audit.csv"
+const PLAYER_NODE_AUDIT_PATH = "data/processed/player_node_audit.csv"
 const MARKET_CONFIG_PATH = "config/market_settings.toml"
+const DEFAULT_PANTUSO_SIGMA = 0.1791
 
 # Column mapping from the SoFIFA Scraper
 const SCRAPER_COLUMNS = [
@@ -158,6 +160,173 @@ function generate_projections(df_players::DataFrame, num_windows::Int)
 end
 
 """
+Builds tactical requirements indexed by node, following N_{r,n} notation.
+Returns a dictionary with key (position_group, node_id) -> required_count.
+"""
+function generate_node_position_requirements(tree::ScenarioTree)
+    req_map = Dict{Tuple{String, Int}, Int}()
+
+    for (node_id, node) in tree.nodes
+        for (pos_group, required_count) in node.position_requirements
+            req_map[(pos_group, node_id)] = required_count
+        end
+    end
+
+    return req_map
+end
+
+function _resolve_stochastic_sigmas(stochastic_cfg::StochasticConfig)
+    ovr_sigma = stochastic_cfg.ovr_shock_sigma > 0 ? stochastic_cfg.ovr_shock_sigma : DEFAULT_PANTUSO_SIGMA
+    value_sigma = stochastic_cfg.value_shock_sigma > 0 ? stochastic_cfg.value_shock_sigma : DEFAULT_PANTUSO_SIGMA
+    return ovr_sigma, value_sigma
+end
+
+"""
+Simulates stochastic evolution over a scenario tree using node indexing.
+
+Returns maps with keys (player_id, node_id):
+1. ovr_node_map
+2. value_node_map
+3. growth_potential_node_map
+4. starter_allowed_map  (1 if can start, 0 if unavailable/injured)
+5. sell_allowed_map     (1 if sale allowed, 0 if sale blocked)
+6. chemistry_multiplier_map (node_id -> multiplier, can be 1.0, 0.0, or negative)
+"""
+function generate_stochastic_projections(
+    df_players::DataFrame,
+    tree::ScenarioTree,
+    stochastic_cfg::StochasticConfig;
+    rng_seed::Int = 42
+)
+    println("Simulating stochastic node-based evolution (OVR, Value, Availability & Chemistry)...")
+
+    rng = MersenneTwister(rng_seed)
+    ovr_sigma, value_sigma = _resolve_stochastic_sigmas(stochastic_cfg)
+
+    ovr_node_map = Dict{Tuple{Int, Int}, Int}()
+    value_node_map = Dict{Tuple{Int, Int}, Float64}()
+    growth_potential_node_map = Dict{Tuple{Int, Int}, Float64}()
+    age_node_map = Dict{Tuple{Int, Int}, Int}()
+    starter_allowed_map = Dict{Tuple{Int, Int}, Int}()
+    sell_allowed_map = Dict{Tuple{Int, Int}, Int}()
+    chemistry_multiplier_map = Dict{Int, Float64}()
+
+    # Cache immutable player attributes for performance and stable lookups.
+    player_ids = Int.(df_players.player_id)
+    potential_by_player = Dict{Int, Float64}(Int(row.player_id) => Float64(coalesce(row.potential, row.overall_rating)) for row in eachrow(df_players))
+    base_ovr_by_player = Dict{Int, Float64}(Int(row.player_id) => Float64(coalesce(row.overall_rating, 60.0)) for row in eachrow(df_players))
+    base_value_by_player = Dict{Int, Float64}(Int(row.player_id) => Float64(coalesce(row.value, 0.5)) for row in eachrow(df_players))
+    base_age_by_player = Dict{Int, Int}(Int(row.player_id) => Int(coalesce(row.age, 25)) for row in eachrow(df_players))
+
+    root_id = tree.root_id
+
+    # Root node is deterministic initial state (no anticipation needed).
+    chemistry_multiplier_map[root_id] = 1.0
+    root_node = tree.nodes[root_id]
+    root_node.metadata["chemistry_multiplier"] = 1.0
+
+    for p_id in player_ids
+        root_ovr = round(Int, base_ovr_by_player[p_id])
+        root_value = max(0.5, base_value_by_player[p_id])
+        root_age = base_age_by_player[p_id]
+
+        ovr_node_map[(p_id, root_id)] = root_ovr
+        value_node_map[(p_id, root_id)] = round(root_value, digits=2)
+        age_node_map[(p_id, root_id)] = root_age
+
+        gap = max(0.0, potential_by_player[p_id] - Float64(root_ovr))
+        growth_coeff = max(0.02, 0.28 - (0.01 * root_age))
+        growth_potential_node_map[(p_id, root_id)] = round(gap * growth_coeff, digits=2)
+
+        starter_allowed_map[(p_id, root_id)] = 1
+        sell_allowed_map[(p_id, root_id)] = 1
+        root_node.sell_allowed[p_id] = true
+    end
+
+    stage_ids = sort(collect(keys(tree.nodes_by_stage)))
+
+    for stage in stage_ids
+        if stage == 0
+            continue
+        end
+
+        node_ids = get(tree.nodes_by_stage, stage, Int[])
+        for node_id in node_ids
+            node = tree.nodes[node_id]
+            parent_id = something(node.parent_id, root_id)
+
+            conflict_occurs = rand(rng) < stochastic_cfg.chemistry_conflict_probability
+            chemistry_multiplier = if conflict_occurs
+                rand(rng) < 0.5 ? 0.0 : -0.5
+            else
+                1.0
+            end
+            chemistry_multiplier_map[node_id] = chemistry_multiplier
+            node.metadata["chemistry_multiplier"] = chemistry_multiplier
+
+            # Node-level market noise creates coherent branch movement across players.
+            branch_market_shock = randn(rng) * value_sigma * 0.15
+            node.metadata["branch_market_shock"] = branch_market_shock
+
+            for p_id in player_ids
+                prev_ovr = Float64(ovr_node_map[(p_id, parent_id)])
+                prev_val = value_node_map[(p_id, parent_id)]
+                prev_age = age_node_map[(p_id, parent_id)]
+                potential = potential_by_player[p_id]
+
+                det_ovr, det_val, det_age, _ = evolution_step(
+                    prev_ovr,
+                    potential,
+                    prev_age,
+                    prev_val,
+                    stage
+                )
+
+                ovr_shock = randn(rng) * ovr_sigma
+                value_shock = randn(rng) * value_sigma
+
+                shocked_ovr = clamp(round(Int, det_ovr + ovr_shock), 40, 99)
+                value_factor = max(0.4, 1.0 + value_shock + branch_market_shock)
+                shocked_value = max(0.5, det_val * value_factor)
+
+                ovr_node_map[(p_id, node_id)] = shocked_ovr
+                value_node_map[(p_id, node_id)] = round(shocked_value, digits=2)
+                age_node_map[(p_id, node_id)] = det_age
+
+                gap = max(0.0, potential - Float64(shocked_ovr))
+                growth_coeff = max(0.02, 0.28 - (0.01 * det_age))
+                growth_potential_node_map[(p_id, node_id)] = round(gap * growth_coeff, digits=2)
+
+                injured_now = rand(rng) < stochastic_cfg.injury_probability
+                starter_allowed_map[(p_id, node_id)] = injured_now ? 0 : 1
+                sell_allowed_map[(p_id, node_id)] = injured_now ? 0 : 1
+
+                if injured_now
+                    push!(node.injury_players, p_id)
+                end
+                node.sell_allowed[p_id] = !injured_now
+            end
+
+            node.metadata["injury_count"] = length(node.injury_players)
+        end
+    end
+
+    println("Stochastic projections completed for $(nrow(df_players)) players across $(length(tree.nodes)) nodes.")
+    println("   ✅ OVR node map: $(length(ovr_node_map)) entries")
+    println("   ✅ Value node map: $(length(value_node_map)) entries")
+    println("   ✅ Growth potential node map: $(length(growth_potential_node_map)) entries")
+
+    return (
+        ovr_node_map,
+        value_node_map,
+        growth_potential_node_map,
+        starter_allowed_map,
+        sell_allowed_map,
+        chemistry_multiplier_map
+    )
+end
+
+"""
 Maps SoFIFA position strings to granular tactical position groups.
 Returns the player's primary position group.
 
@@ -262,6 +431,58 @@ function generate_wage_map(df_players::DataFrame, ovr_map::Dict, num_windows::In
 end
 
 """
+Generates annual wages indexed by node: (player_id, node_id) -> wage.
+"""
+function generate_wage_map_by_node(df_players::DataFrame, ovr_node_map::Dict, tree::ScenarioTree)
+    println("Generating node-indexed Wage map...")
+
+    free_agent_wage_threshold = 1000.0
+    free_agent_wage_multiplier = 1.0
+
+    if isfile(MARKET_CONFIG_PATH)
+        market_cfg = TOML.parsefile(MARKET_CONFIG_PATH)
+        market_settings = get(market_cfg, "market_settings", Dict{String,Any}())
+
+        free_agent_wage_threshold = Float64(get(market_settings, "free_agent_wage_threshold", free_agent_wage_threshold))
+        free_agent_wage_multiplier = Float64(get(market_settings, "free_agent_wage_multiplier", free_agent_wage_multiplier))
+
+        if free_agent_wage_multiplier <= 0
+            @warn "Invalid free_agent_wage_multiplier=$free_agent_wage_multiplier. Falling back to 1.0"
+            free_agent_wage_multiplier = 1.0
+        end
+    end
+
+    wage_by_ovr = infer_free_agent_wages(df_players)
+    wage_node_map = Dict{Tuple{Int, Int}, Float64}()
+
+    node_ids = sort(collect(keys(tree.nodes)))
+
+    for row in eachrow(df_players)
+        p_id = Int(row.player_id)
+        base_ovr = Float64(coalesce(row.overall_rating, 60.0))
+        raw_wage = Float64(coalesce(row.wage, 0.0))
+        is_free_agent = raw_wage <= free_agent_wage_threshold
+
+        base_wage = if !is_free_agent
+            raw_wage
+        else
+            inferred = get(wage_by_ovr, Int(round(base_ovr)), base_ovr * 2000)
+            inferred * free_agent_wage_multiplier
+        end
+
+        for node_id in node_ids
+            current_ovr = Float64(ovr_node_map[(p_id, node_id)])
+            ovr_factor = current_ovr / max(base_ovr, 1.0)
+            adjusted_wage = base_wage * ovr_factor
+            wage_node_map[(p_id, node_id)] = round(adjusted_wage, digits=2)
+        end
+    end
+
+    println("✅ Node-indexed wage map generated.")
+    return wage_node_map
+end
+
+"""
 Calculates the actual Acquisition Cost (Buying Price) using the Market Reputation logic.
 This map is what the Gurobi budget constraint will use.
 """
@@ -294,6 +515,86 @@ function generate_cost_map(df_players::DataFrame, value_map::Dict, num_windows::
     
     println("✅ Cost map generated for all windows.")
     return cost_map
+end
+
+"""
+Generates acquisition costs indexed by node: (player_id, node_id) -> cost.
+Uses the same reputation logic as deterministic mode on top of node values.
+"""
+function generate_cost_map_by_node(df_players::DataFrame, value_node_map::Dict, tree::ScenarioTree)
+    println("Applying Market Reputation to node-indexed acquisition costs...")
+
+    if !isfile(MARKET_CONFIG_PATH)
+        @warn "Market config not found at $MARKET_CONFIG_PATH. Using node value map as fallback costs."
+        return value_node_map
+    end
+
+    market_cfg = TOML.parsefile(MARKET_CONFIG_PATH)
+    cost_node_map = Dict{Tuple{Int, Int}, Float64}()
+    node_ids = sort(collect(keys(tree.nodes)))
+
+    for row in eachrow(df_players)
+        p_id = Int(row.player_id)
+        league = coalesce(row.club_league_name, "Unknown")
+        ir = Int(coalesce(row.international_reputation, 1.0))
+
+        multiplier = get_market_multiplier(league, ir, market_cfg)
+
+        for node_id in node_ids
+            base_value = value_node_map[(p_id, node_id)]
+            cost_node_map[(p_id, node_id)] = round(base_value * multiplier, digits=2)
+        end
+    end
+
+    println("✅ Node-indexed cost map generated.")
+    return cost_node_map
+end
+
+"""
+Exports a node-level analytical report for stochastic projections.
+"""
+function export_node_analysis(
+    df_players::DataFrame,
+    tree::ScenarioTree,
+    ovr_node_map::Dict,
+    value_node_map::Dict,
+    cost_node_map::Dict,
+    starter_allowed_map::Dict,
+    sell_allowed_map::Dict
+)
+    println("📊 Generating node-level audit report...")
+
+    rows = []
+    sorted_nodes = sort(collect(tree.nodes); by=x -> x[1])
+
+    for row in eachrow(df_players)
+        p_id = Int(row.player_id)
+
+        for (node_id, node) in sorted_nodes
+            push!(rows, (
+                player_id = p_id,
+                name = row.name,
+                node_id = node_id,
+                stage = node.stage,
+                parent_id = isnothing(node.parent_id) ? -1 : node.parent_id,
+                branch_probability = node.branch_probability,
+                cumulative_probability = node.cumulative_probability,
+                tactical_scheme = node.tactical_scheme,
+                chemistry_multiplier = Float64(get(node.metadata, "chemistry_multiplier", 1.0)),
+                ovr = ovr_node_map[(p_id, node_id)],
+                market_value_eur = round(value_node_map[(p_id, node_id)], digits=0),
+                acquisition_cost_eur = round(cost_node_map[(p_id, node_id)], digits=0),
+                starter_allowed = starter_allowed_map[(p_id, node_id)],
+                sell_allowed = sell_allowed_map[(p_id, node_id)]
+            ))
+        end
+    end
+
+    df_node = DataFrame(rows)
+    CSV.write(PLAYER_NODE_AUDIT_PATH, df_node)
+
+    println("✅ Player-node audit saved at '$PLAYER_NODE_AUDIT_PATH'.")
+    return df_node
 end
 
 """

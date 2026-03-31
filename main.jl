@@ -422,7 +422,11 @@ function get_experiment_config_path(args::Vector{String})
     return DEFAULT_EXPERIMENT_CONFIG_PATH
 end
 
-function run_pipeline(num_windows::Int)
+function run_pipeline(
+    num_windows::Int;
+    stochastic_config::Union{Nothing,StochasticConfig} = nothing,
+    scenario_tree::Union{Nothing,ScenarioTree} = nothing
+)
     println("🚀 Starting PSR Squad Optimization Pipeline...")
     println("="^50)
 
@@ -441,10 +445,60 @@ function run_pipeline(num_windows::Int)
     # STEP 5: Unified Analytical Export
     export_analysis(df, ovr_map, value_map, cost_map, num_windows)
 
+    stochastic_bundle = nothing
+
+    if !isnothing(stochastic_config) && stochastic_config.enabled
+        if isnothing(scenario_tree)
+            error("Stochastic mode is enabled but no scenario tree was provided to run_pipeline.")
+        end
+
+        println("\n🌳 Running stochastic node-indexed projection pipeline...")
+
+        node_ovr_map,
+        node_value_map,
+        node_growth_potential_map,
+        starter_allowed_map,
+        sell_allowed_map,
+        chemistry_multiplier_map = generate_stochastic_projections(
+            df,
+            scenario_tree,
+            stochastic_config
+        )
+
+        node_cost_map = generate_cost_map_by_node(df, node_value_map, scenario_tree)
+        node_wage_map = generate_wage_map_by_node(df, node_ovr_map, scenario_tree)
+        node_position_requirements = generate_node_position_requirements(scenario_tree)
+
+        export_node_analysis(
+            df,
+            scenario_tree,
+            node_ovr_map,
+            node_value_map,
+            node_cost_map,
+            starter_allowed_map,
+            sell_allowed_map
+        )
+
+        stochastic_bundle = (
+            tree = scenario_tree,
+            ovr_map = node_ovr_map,
+            value_map = node_value_map,
+            cost_map = node_cost_map,
+            growth_potential_map = node_growth_potential_map,
+            wage_map = node_wage_map,
+            starter_allowed_map = starter_allowed_map,
+            sell_allowed_map = sell_allowed_map,
+            chemistry_multiplier_map = chemistry_multiplier_map,
+            position_requirements_map = node_position_requirements
+        )
+
+        println("✅ Stochastic node-indexed data generated.")
+    end
+
     println("="^50)
     println("✅ Pipeline finished! Unified report saved in 'data/processed/player_window_audit.csv'.")
 
-    return df, ovr_map, value_map, cost_map, growth_potential_map, wage_map
+    return df, ovr_map, value_map, cost_map, growth_potential_map, wage_map, stochastic_bundle
 end
 
 """
@@ -651,7 +705,23 @@ function main()
     exp_cfg = load_experiment_config(config_path)
 
     # Run data pipeline
-    df, ovr_map, value_map, cost_map, growth_potential_map, wage_map = run_pipeline(exp_cfg.num_windows)
+    df,
+    ovr_map,
+    value_map,
+    cost_map,
+    growth_potential_map,
+    wage_map,
+    stochastic_bundle = run_pipeline(
+        exp_cfg.num_windows,
+        stochastic_config = exp_cfg.stochastic_config,
+        scenario_tree = exp_cfg.scenario_tree
+    )
+
+    if exp_cfg.stochastic_config.enabled && !isnothing(stochastic_bundle)
+        println("\nℹ️  Stochastic data pipeline is active.")
+        println("   Node-indexed outputs are available in data/processed/player_node_audit.csv.")
+        println("   Optimization model is still deterministic and will be migrated in Phase 3.")
+    end
 
     # Check if optimization dependencies are available
     println("\n" * "="^60)
@@ -699,7 +769,7 @@ function main()
         println("   2. Install Gurobi.jl: julia -e 'using Pkg; Pkg.add(\"Gurobi\"); Pkg.build(\"Gurobi\")'")
         println("\n   Then run: julia main.jl")
 
-        return df, ovr_map, value_map, cost_map, growth_potential_map, wage_map
+        return df, ovr_map, value_map, cost_map, growth_potential_map, wage_map, stochastic_bundle
     end
 end
 
