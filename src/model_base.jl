@@ -23,6 +23,13 @@ const P_POSICAO = 1e6
 const P_SALARIO = 1e5
 const P_CAIXA = 1e9
 
+# Monetary normalization used inside optimization models.
+# Internal model unit is million EUR to improve numerical conditioning.
+const MONEY_SCALE = 1e6
+
+money_to_millions(value::Real) = Float64(value) / MONEY_SCALE
+millions_to_money(value::Real) = Float64(value) * MONEY_SCALE
+
 # Declaring our model structures
 struct ModelData
     players::DataFrame

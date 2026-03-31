@@ -49,7 +49,7 @@ function build_squad_optimization_model(data::ModelData, params::ModelParameters
     # ==== INITIAL CONDITIONS ====
     verbose && println("  ├─ Initial conditions...")
 
-    @constraint(model, budget[first(T)] == params.initial_budget)
+    @constraint(model, budget[first(T)] == money_to_millions(params.initial_budget))
 
     for j in J
         if j in data.initial_squad
@@ -108,15 +108,15 @@ function build_squad_optimization_model(data::ModelData, params::ModelParameters
                     signing_cost = wage * 52 * params.signing_bonus_rate
                 end
 
-                add_to_expression!(signing_costs, signing_cost * buy[j, t-1])
+                add_to_expression!(signing_costs, money_to_millions(signing_cost) * buy[j, t-1])
             end
 
             @constraint(model,
                 budget[t] == budget[t-1]
-                    - sum((1 + params.transaction_cost_buy) * data.cost_map[(j,t)] * buy[j,t-1] for j in J)
+                    - sum(money_to_millions((1 + params.transaction_cost_buy) * data.cost_map[(j,t)]) * buy[j,t-1] for j in J)
                     - signing_costs
-                    + sum((1 - params.transaction_cost_sell) * data.value_map[(j,t)] * sell[j,t-1] for j in J)
-                    + revenue
+                    + sum(money_to_millions((1 - params.transaction_cost_sell) * data.value_map[(j,t)]) * sell[j,t-1] for j in J)
+                    + money_to_millions(revenue)
                     + budget_deficit[t]
             )
         end
@@ -135,15 +135,15 @@ function build_squad_optimization_model(data::ModelData, params::ModelParameters
 
     # Baseline payroll comes from the initial squad at window 0.
     initial_window = first(T)
-    initial_payroll = sum(data.wage_map[(j, initial_window)] for j in data.initial_squad)
-    salary_cap_per_window = initial_payroll * params.salary_cap_multiplier_initial * params.salary_cap_window_factor
+    initial_payroll_million = sum(money_to_millions(data.wage_map[(j, initial_window)]) for j in data.initial_squad)
+    salary_cap_per_window = initial_payroll_million * params.salary_cap_multiplier_initial * params.salary_cap_window_factor
 
-    verbose && println("  │  Initial payroll baseline: €$(round(initial_payroll / 1e6, digits=2))M")
-    verbose && println("  │  Salary cap per window: €$(round(salary_cap_per_window / 1e6, digits=2))M")
+    verbose && println("  │  Initial payroll baseline: €$(round(initial_payroll_million, digits=2))M")
+    verbose && println("  │  Salary cap per window: €$(round(salary_cap_per_window, digits=2))M")
 
     for t in T
         @constraint(model,
-            sum(data.wage_map[(j,t)] * x[j,t] for j in J) <= salary_cap_per_window + slack_salario[t]
+            sum(money_to_millions(data.wage_map[(j,t)]) * x[j,t] for j in J) <= salary_cap_per_window + slack_salario[t]
         )
     end
 
@@ -263,8 +263,8 @@ function build_squad_optimization_model(data::ModelData, params::ModelParameters
 
     # 6. Terminal value
     t_final = last(T)
-    valor_elenco_final = sum(data.value_map[(j, t_final)] * x[j, t_final] for j in J)
-    add_to_expression!(obj_terms, 0.001 * valor_elenco_final)
+    valor_elenco_final_million = sum(money_to_millions(data.value_map[(j, t_final)]) * x[j, t_final] for j in J)
+    add_to_expression!(obj_terms, 0.001 * valor_elenco_final_million)
     add_to_expression!(obj_terms, params.risk_appetite * budget[t_final])
 
     @objective(model, Max, obj_terms)

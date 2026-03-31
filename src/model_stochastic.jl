@@ -55,7 +55,7 @@ function build_stochastic_squad_optimization_model(
     # ==== INITIAL CONDITIONS (ROOT NODE) ====
     verbose && println("  ├─ Root-node initial conditions...")
 
-    @constraint(model, budget[root_id] == params.initial_budget)
+    @constraint(model, budget[root_id] == money_to_millions(params.initial_budget))
 
     for j in J
         initial_presence = j in data.initial_squad ? 1 : 0
@@ -123,15 +123,15 @@ function build_stochastic_squad_optimization_model(
                 wage * 52 * params.signing_bonus_rate
             end
 
-            add_to_expression!(signing_costs, signing_cost * buy[j, p])
+            add_to_expression!(signing_costs, money_to_millions(signing_cost) * buy[j, p])
         end
 
         @constraint(model,
             budget[n] == budget[p]
-                - sum((1 + params.transaction_cost_buy) * data.cost_node_map[(j,n)] * buy[j,p] for j in J)
+                - sum(money_to_millions((1 + params.transaction_cost_buy) * data.cost_node_map[(j,n)]) * buy[j,p] for j in J)
                 - signing_costs
-                + sum((1 - params.transaction_cost_sell) * data.value_node_map[(j,n)] * sell[j,p] for j in J)
-                + revenue
+                + sum(money_to_millions((1 - params.transaction_cost_sell) * data.value_node_map[(j,n)]) * sell[j,p] for j in J)
+                + money_to_millions(revenue)
                 + budget_deficit[n]
         )
     end
@@ -147,15 +147,15 @@ function build_stochastic_squad_optimization_model(
     # ==== SALARY CAP (SOFT) ====
     verbose && println("  ├─ Salary cap constraints (soft, node-indexed)...")
 
-    initial_payroll = sum(data.wage_node_map[(j, root_id)] for j in data.initial_squad)
-    salary_cap_per_node = initial_payroll * params.salary_cap_multiplier_initial * params.salary_cap_window_factor
+    initial_payroll_million = sum(money_to_millions(data.wage_node_map[(j, root_id)]) for j in data.initial_squad)
+    salary_cap_per_node = initial_payroll_million * params.salary_cap_multiplier_initial * params.salary_cap_window_factor
 
-    verbose && println("  │  Initial payroll baseline: €$(round(initial_payroll / 1e6, digits=2))M")
-    verbose && println("  │  Salary cap per node: €$(round(salary_cap_per_node / 1e6, digits=2))M")
+    verbose && println("  │  Initial payroll baseline: €$(round(initial_payroll_million, digits=2))M")
+    verbose && println("  │  Salary cap per node: €$(round(salary_cap_per_node, digits=2))M")
 
     for n in N
         @constraint(model,
-            sum(data.wage_node_map[(j,n)] * x[j,n] for j in J) <= salary_cap_per_node + slack_salario[n]
+            sum(money_to_millions(data.wage_node_map[(j,n)]) * x[j,n] for j in J) <= salary_cap_per_node + slack_salario[n]
         )
     end
 
@@ -285,8 +285,8 @@ function build_stochastic_squad_optimization_model(
             continue
         end
 
-        valor_elenco_final = sum(data.value_node_map[(j, n)] * x[j, n] for j in J)
-        add_to_expression!(obj_terms, prob_n * 0.001 * valor_elenco_final)
+        valor_elenco_final_million = sum(money_to_millions(data.value_node_map[(j, n)]) * x[j, n] for j in J)
+        add_to_expression!(obj_terms, prob_n * 0.001 * valor_elenco_final_million)
         add_to_expression!(obj_terms, prob_n * params.risk_appetite * budget[n])
     end
 

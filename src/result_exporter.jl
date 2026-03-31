@@ -50,8 +50,8 @@ function extract_deterministic_results(
 
     budget_rows = [(
         window = t,
-        cash_balance = value(model[:budget][t]),
-        deficit = value(model[:budget_deficit][t])
+        cash_balance = millions_to_money(value(model[:budget][t])),
+        deficit = millions_to_money(value(model[:budget_deficit][t]))
     ) for t in T]
     df_budget = DataFrame(budget_rows)
 
@@ -179,8 +179,8 @@ function extract_stochastic_results(
             parent_id = parent_id,
             stage = data.stage_by_node[n],
             cumulative_probability = data.probability_by_node[n],
-            cash_balance = value(model[:budget][n]),
-            deficit = value(model[:budget_deficit][n])
+            cash_balance = millions_to_money(value(model[:budget][n])),
+            deficit = millions_to_money(value(model[:budget_deficit][n]))
         ))
     end
     df_budget = DataFrame(budget_rows)
