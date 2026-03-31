@@ -52,7 +52,7 @@ def plot_ovr_evolution(df, targets, output_dir="viz/"):
         last = player_data.iloc[-1]
         ax.text(last['window']+0.1, last['ovr'], f"{nome}\n({cat})", va='center', fontweight='bold')
 
-    ax.set_title("Metodologia de Evolução: Dinâmica por Faixa Etária", fontsize=18, pad=20, fontweight='bold')
+    ax.set_title("Metodologia de Evolução por Faixa Etária", fontsize=18, pad=20, fontweight='bold')
     ax.set_ylabel("Overall Rating (OVR)", fontsize=14)
     ax.set_xlabel("Janelas de Transferência", fontsize=14)
     ax.set_xticks(df_plot['window'].unique())
