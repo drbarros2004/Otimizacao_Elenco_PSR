@@ -58,3 +58,23 @@ peso_asset = 600.0
 peso_performance = 2000.0 
 bonus_entrosamento = 100.0
 risk_appetite = 0.001
+
+[stochastic]
+# Keep false to preserve deterministic behavior.
+enabled = false
+ovr_shock_sigma = 0.06
+value_shock_sigma = 0.12
+chemistry_conflict_probability = 0.10
+injury_probability = 0.08
+
+[scenario_tree]
+# One branching factor per stage transition: stage 0->1, 1->2, ..., (W-1)->W.
+# Length must match simulation.num_windows.
+branching_by_stage = [2, 2, 2, 2]
+
+[scenario_tree.stage_probabilities]
+# Optional; defaults to uniform if omitted.
+stage_1 = [0.60, 0.40]
+stage_2 = [0.50, 0.50]
+stage_3 = [0.55, 0.45]
+stage_4 = [0.50, 0.50]

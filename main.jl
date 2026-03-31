@@ -20,6 +20,137 @@ struct ExperimentConfig
     num_windows::Int
     initial_squad_strategy::String
     model_params::ModelParameters
+    stochastic_config::StochasticConfig
+    scenario_tree::Union{Nothing, ScenarioTree}
+end
+
+function _parse_branching_vector(raw_branching, num_windows::Int)
+    if !(raw_branching isa AbstractVector)
+        error("scenario_tree.branching_by_stage must be an array.")
+    end
+
+    branching = Int[]
+    for v in raw_branching
+        if !(v isa Integer)
+            error("scenario_tree.branching_by_stage entries must be integers.")
+        end
+        b = Int(v)
+        if b < 1
+            error("scenario_tree.branching_by_stage entries must be >= 1.")
+        end
+        push!(branching, b)
+    end
+
+    if length(branching) != num_windows
+        error("scenario_tree.branching_by_stage length must equal simulation.num_windows ($num_windows).")
+    end
+
+    return branching
+end
+
+function _parse_stage_probabilities(
+    raw_probs::Dict{String,Any},
+    branching_by_stage::Vector{Int},
+    num_windows::Int
+)
+    probs_by_stage = Vector{Vector{Float64}}()
+
+    for stage in 1:num_windows
+        b = branching_by_stage[stage]
+        key = "stage_$(stage)"
+        defaults = fill(1.0 / b, b)
+
+        if !haskey(raw_probs, key)
+            push!(probs_by_stage, defaults)
+            continue
+        end
+
+        raw_stage_probs = raw_probs[key]
+        if !(raw_stage_probs isa AbstractVector)
+            error("scenario_tree.stage_probabilities.$key must be an array.")
+        end
+
+        stage_probs = Float64[]
+        for p in raw_stage_probs
+            p_float = Float64(p)
+            if p_float < 0.0 || p_float > 1.0
+                error("scenario_tree.stage_probabilities.$key must contain probabilities in [0,1].")
+            end
+            push!(stage_probs, p_float)
+        end
+
+        if length(stage_probs) != b
+            error("scenario_tree.stage_probabilities.$key length must be $b.")
+        end
+
+        if !isapprox(sum(stage_probs), 1.0; atol=1e-9)
+            error("scenario_tree.stage_probabilities.$key must sum to 1.0.")
+        end
+
+        push!(probs_by_stage, stage_probs)
+    end
+
+    return probs_by_stage
+end
+
+function _parse_stochastic_config(
+    cfg::Dict{String,Any},
+    num_windows::Int,
+    formation_catalog::Dict{String, Dict{String, Int}},
+    formation_by_window::Dict{Int, String}
+)
+    stochastic_cfg = get(cfg, "stochastic", Dict{String,Any}())
+    scenario_tree_cfg = get(cfg, "scenario_tree", Dict{String,Any}())
+
+    enabled = Bool(get(stochastic_cfg, "enabled", false))
+
+    if !enabled
+        return StochasticConfig(), nothing
+    end
+
+    raw_branching = get(scenario_tree_cfg, "branching_by_stage", fill(1, num_windows))
+    branching_by_stage = _parse_branching_vector(raw_branching, num_windows)
+
+    raw_probs = get(scenario_tree_cfg, "stage_probabilities", Dict{String,Any}())
+    if !(raw_probs isa Dict)
+        error("scenario_tree.stage_probabilities must be a TOML table.")
+    end
+    probabilities_by_stage = _parse_stage_probabilities(raw_probs, branching_by_stage, num_windows)
+
+    ovr_shock_sigma = Float64(get(stochastic_cfg, "ovr_shock_sigma", 0.0))
+    value_shock_sigma = Float64(get(stochastic_cfg, "value_shock_sigma", 0.0))
+    chemistry_conflict_probability = Float64(get(stochastic_cfg, "chemistry_conflict_probability", 0.0))
+    injury_probability = Float64(get(stochastic_cfg, "injury_probability", 0.0))
+
+    if ovr_shock_sigma < 0 || value_shock_sigma < 0
+        error("stochastic sigmas must be non-negative.")
+    end
+    if chemistry_conflict_probability < 0 || chemistry_conflict_probability > 1
+        error("stochastic.chemistry_conflict_probability must be in [0,1].")
+    end
+    if injury_probability < 0 || injury_probability > 1
+        error("stochastic.injury_probability must be in [0,1].")
+    end
+
+    stoch_config = StochasticConfig(
+        enabled = enabled,
+        branching_by_stage = branching_by_stage,
+        child_probabilities_by_stage = probabilities_by_stage,
+        ovr_shock_sigma = ovr_shock_sigma,
+        value_shock_sigma = value_shock_sigma,
+        chemistry_conflict_probability = chemistry_conflict_probability,
+        injury_probability = injury_probability
+    )
+
+    tree = build_scenario_tree(
+        num_windows,
+        branching_by_stage,
+        probabilities_by_stage,
+        formation_catalog,
+        formation_by_window
+    )
+
+    return stoch_config, tree
 end
 
 """
@@ -242,6 +373,13 @@ function load_experiment_config(config_path::String=DEFAULT_EXPERIMENT_CONFIG_PA
         risk_appetite = risk_appetite
     )
 
+    stochastic_config, scenario_tree = _parse_stochastic_config(
+        cfg,
+        num_windows,
+        formation_catalog,
+        formation_by_window
+    )
+
     println("🧪 Loaded experiment config: $config_path")
     println("   Windows: $num_windows")
     println("   Initial strategy: $initial_squad_strategy")
@@ -250,7 +388,21 @@ function load_experiment_config(config_path::String=DEFAULT_EXPERIMENT_CONFIG_PA
     println("   Salary cap multiplier (initial payroll): x$(round(salary_cap_multiplier_initial, digits=2))")
     println("   Salary cap window factor: $(round(salary_cap_window_factor, digits=2)) | penalty: $(round(salary_cap_penalty, digits=1))")
 
-    return ExperimentConfig(num_windows, initial_squad_strategy, model_params)
+    if stochastic_config.enabled && !isnothing(scenario_tree)
+        println("   Stochastic mode: enabled")
+        println("   Branching by stage: $(stochastic_config.branching_by_stage)")
+        println("   Scenario nodes: $(length(scenario_tree.nodes)) | leaf nodes: $(length(scenario_tree.leaf_nodes))")
+    else
+        println("   Stochastic mode: disabled")
+    end
+
+    return ExperimentConfig(
+        num_windows,
+        initial_squad_strategy,
+        model_params,
+        stochastic_config,
+        scenario_tree
+    )
 end
 
 """
