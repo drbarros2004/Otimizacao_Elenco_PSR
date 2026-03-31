@@ -12,7 +12,7 @@ initial_squad_strategy = "team:Flamengo"
 [constraints]
 max_squad_size = 30
 min_squad_size = 18
-friction_penalty = 10.0
+friction_penalty = -200.0 # estava em 10, agora está em -500 e não deu muita diferença. ver se isso é realmente necessário
 transaction_cost_buy = 0.15
 transaction_cost_sell = 0.12
 signing_bonus_rate = 0.5
