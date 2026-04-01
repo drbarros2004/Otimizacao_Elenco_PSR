@@ -1,6 +1,8 @@
 [simulation]
 # Number of transfer windows to simulate (2 windows ~= 1 season)
 num_windows = 4
+# Candidate pruning for faster optimization (0 disables).
+top_k_players_per_position = 600
 
 [optimization]
 # Financial setup
@@ -12,14 +14,14 @@ initial_squad_strategy = "team:Flamengo"
 [constraints]
 max_squad_size = 30
 min_squad_size = 18
-friction_penalty = -200.0 # estava em 10, agora está em -500 e não deu muita diferença. ver se isso é realmente necessário
+friction_penalty = 50.0 # estava em 10, agora está em -500 e não deu muita diferença. ver se isso é realmente necessário
 transaction_cost_buy = 0.15
 transaction_cost_sell = 0.12
 signing_bonus_rate = 0.5
 # Soft salary-cap controls based on initial squad payroll
 salary_cap_multiplier_initial = 1.0
 salary_cap_window_factor = 1.0
-salary_cap_penalty = 100000.0
+salary_cap_penalty = 500.0
 
 [formation_catalog.433]
 # Exact starters by position for each tactical scheme
@@ -61,7 +63,7 @@ risk_appetite = 0.001
 
 [stochastic]
 # Keep false to preserve deterministic behavior.
-enabled = false
+enabled = true
 ovr_shock_sigma = 0.06
 value_shock_sigma = 0.12
 chemistry_conflict_probability = 0.10
@@ -78,3 +80,23 @@ stage_1 = [0.60, 0.40]
 stage_2 = [0.50, 0.50]
 stage_3 = [0.55, 0.45]
 stage_4 = [0.50, 0.50]
+
+# Optional hybrid mode: manual events by node.
+# Key format must be node_<id> (e.g., node_3).
+# Supported fields:
+# - label (string): scenario business description shown in dashboards.
+# - tactical_override (string): must exist in [formation_catalog].
+# - injury_overrides (array): player names or player_ids forced as unavailable in that node.
+# - market_shock (float): additive branch market shock applied to value dynamics.
+# - chemistry_bonus (float): overrides chemistry multiplier for that node.
+
+[scenario_tree.manual_events.node_3]
+label = "Mudança de Técnico + Lesão Craque"
+tactical_override = "442"
+injury_overrides = ["Giorgian de Arrascaeta"]
+market_shock = -0.15
+
+[scenario_tree.manual_events.node_2]
+label = "Continuidade e Título"
+tactical_override = "433"
+chemistry_bonus = 1.2
