@@ -20,8 +20,8 @@ const BONUS_INCREMENTO = 0.5
 const BIG_M = 1000.0
 
 const P_POSICAO = 1e6
-const P_SALARIO = 1e5
-const P_CAIXA = 1e9
+const P_SALARIO = 500.0
+const P_CAIXA = 3000.0
 
 # Monetary normalization used inside optimization models.
 # Internal model unit is million EUR to improve numerical conditioning.

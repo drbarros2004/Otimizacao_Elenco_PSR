@@ -4,7 +4,7 @@ Centralizes optimizer setup, solve lifecycle, status checks, and conflict diagno
 """
 
 using JuMP
-const MOI = JuMP.MOI
+const MOI = JuMP.MOI # TODO: understand this
 
 struct SolverRunSummary
     status
@@ -24,8 +24,9 @@ function configure_solver!(
     time_limit::Float64 = 600.0,
     mip_gap::Float64 = 0.01,
     verbose::Bool = true,
-    numeric_focus::Union{Nothing,Int} = nothing,
-    scale_flag::Union{Nothing,Int} = nothing
+    numeric_focus::Union{Nothing,Int} = 3,
+    scale_flag::Union{Nothing,Int} = 2,
+    mip_focus::Union{Nothing,Int} = 1
 )
     set_optimizer_attribute(model, "TimeLimit", time_limit)
     set_optimizer_attribute(model, "MIPGap", mip_gap)
@@ -40,6 +41,10 @@ function configure_solver!(
 
     if !isnothing(scale_flag)
         set_optimizer_attribute(model, "ScaleFlag", scale_flag)
+    end
+
+    if !isnothing(mip_focus)
+        set_optimizer_attribute(model, "MIPFocus", mip_focus)
     end
 
     return model
