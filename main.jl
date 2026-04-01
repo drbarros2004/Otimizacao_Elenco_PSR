@@ -107,14 +107,14 @@ function _parse_manual_events(
     raw_manual_events,
     formation_catalog::Dict{String, Dict{String, Int}}
 )
-    if !(raw_manual_events isa Dict)
+    if !(raw_manual_events isa AbstractDict)
         error("scenario_tree.manual_events must be a TOML table.")
     end
 
     events = Dict{Int, Dict{String, Any}}()
     for (raw_key, raw_event_any) in raw_manual_events
         node_id = _parse_manual_event_node_key(String(raw_key))
-        if !(raw_event_any isa Dict)
+        if !(raw_event_any isa AbstractDict)
             error("scenario_tree.manual_events.$(raw_key) must be an inline table.")
         end
 

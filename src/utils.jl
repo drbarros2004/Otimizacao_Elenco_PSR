@@ -34,6 +34,11 @@ struct ScenarioTree
 end
 
 function get_effective_tactical_scheme(node::ScenarioNode)::String
+    effective = get(node.metadata, "effective_tactical_scheme", nothing)
+    if !isnothing(effective)
+        return String(effective)
+    end
+
     override = get(node.metadata, "tactical_override", nothing)
     if isnothing(override)
         return node.tactical_scheme

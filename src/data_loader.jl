@@ -389,6 +389,8 @@ function generate_stochastic_projections(
     # Root node is deterministic initial state (no anticipation needed).
     root_node = tree.nodes[root_id]
     root_event_state = _apply_manual_event_to_node!(root_node, root_id, stochastic_cfg, player_name_index)
+    root_effective_scheme = haskey(root_event_state, "tactical_override") ? String(root_event_state["tactical_override"]) : String(root_node.tactical_scheme)
+    root_node.metadata["effective_tactical_scheme"] = root_effective_scheme
 
     root_chemistry_multiplier = haskey(root_event_state, "chemistry_bonus") ? Float64(root_event_state["chemistry_bonus"]) : 1.0
     chemistry_multiplier_map[root_id] = root_chemistry_multiplier
@@ -430,8 +432,21 @@ function generate_stochastic_projections(
         for node_id in node_ids
             node = tree.nodes[node_id]
             parent_id = something(node.parent_id, root_id)
+            parent_node = tree.nodes[parent_id]
+            parent_effective_scheme = get_effective_tactical_scheme(parent_node)
             event_state = _apply_manual_event_to_node!(node, node_id, stochastic_cfg, player_name_index)
             forced_injury_ids = haskey(event_state, "forced_injury_ids") ? event_state["forced_injury_ids"] : Set{Int}()
+
+            if haskey(event_state, "tactical_override")
+                node.metadata["effective_tactical_scheme"] = String(event_state["tactical_override"])
+            else
+                # Inherit tactical setup from parent when no local override is declared.
+                node.metadata["effective_tactical_scheme"] = parent_effective_scheme
+                empty!(node.position_requirements)
+                for (pos, count) in parent_node.position_requirements
+                    node.position_requirements[pos] = count
+                end
+            end
 
             conflict_occurs = rand(rng) < stochastic_cfg.chemistry_conflict_probability
             chemistry_multiplier = if conflict_occurs
