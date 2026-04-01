@@ -8,6 +8,7 @@ Base.@kwdef struct StochasticConfig
     value_shock_sigma::Float64 = 0.0
     chemistry_conflict_probability::Float64 = 0.0
     injury_probability::Float64 = 0.0
+    manual_node_events::Dict{Int, Dict{String, Any}} = Dict{Int, Dict{String, Any}}()
 end
 
 struct ScenarioNode
@@ -30,6 +31,14 @@ struct ScenarioTree
     root_id::Int
     nodes_by_stage::Dict{Int, Vector{Int}}
     leaf_nodes::Vector{Int}
+end
+
+function get_effective_tactical_scheme(node::ScenarioNode)::String
+    override = get(node.metadata, "tactical_override", nothing)
+    if isnothing(override)
+        return node.tactical_scheme
+    end
+    return String(override)
 end
 
 function build_scenario_tree(
