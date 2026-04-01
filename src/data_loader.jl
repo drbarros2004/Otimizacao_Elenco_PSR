@@ -95,6 +95,56 @@ end
 
 
 """
+    filter_top_k_players_by_position(df::DataFrame, k::Int; protected_player_ids::Vector{Int}=Int[])
+
+Keeps only the top-K players per position group based on overall quality proxies,
+optionally preserving a set of protected players (for example, players from the
+initial squad strategy team).
+"""
+function filter_top_k_players_by_position(
+    df::DataFrame,
+    k::Int;
+    protected_player_ids::Vector{Int} = Int[]
+)
+    if k <= 0
+        return df
+    end
+
+    required_cols = [:player_id, :pos_group, :overall_rating, :potential, :value]
+    for col in required_cols
+        if !(col in names(df))
+            error("Cannot apply top-K filter: missing required column '$col'.")
+        end
+    end
+
+    sorted_df = sort(df, [:pos_group, :overall_rating, :potential, :value], rev=[false, true, true, true])
+    grouped = groupby(sorted_df, :pos_group)
+
+    kept_parts = DataFrame[]
+    for g in grouped
+        n_keep = min(k, nrow(g))
+        push!(kept_parts, first(g, n_keep))
+    end
+
+    filtered = isempty(kept_parts) ? DataFrame() : vcat(kept_parts..., cols=:union)
+
+    if !isempty(protected_player_ids)
+        protected_set = Set(Int.(protected_player_ids))
+        already_kept = Set(Int.(filtered.player_id))
+        missing_ids = collect(setdiff(protected_set, already_kept))
+
+        if !isempty(missing_ids)
+            extra = df[in.(Int.(df.player_id), Ref(Set(missing_ids))), :]
+            filtered = vcat(filtered, extra, cols=:union)
+        end
+    end
+
+    unique!(filtered, :player_id)
+    return filtered
+end
+
+
+"""
 Simulates player evolution across multiple windows sequentially.
 Returns two maps:
 1. `ovr_map`: (player_id, window) -> OVR
@@ -181,6 +231,121 @@ function _resolve_stochastic_sigmas(stochastic_cfg::StochasticConfig)
     return ovr_sigma, value_sigma
 end
 
+function _normalize_player_name(name)::String
+    return lowercase(strip(replace(String(name), r"\s+" => " ")))
+end
+
+function _build_player_name_index(df_players::DataFrame)
+    index = Dict{String, Vector{Int}}()
+    for row in eachrow(df_players)
+        name = _normalize_player_name(coalesce(row.name, ""))
+        if isempty(name)
+            continue
+        end
+        ids = get!(index, name, Int[])
+        push!(ids, Int(row.player_id))
+    end
+    return index
+end
+
+function _resolve_manual_injury_ids(
+    raw_overrides,
+    player_name_index::Dict{String, Vector{Int}}
+)
+    if !(raw_overrides isa AbstractVector)
+        error("manual_events.injury_overrides must be an array of names or player_ids.")
+    end
+
+    injury_ids = Set{Int}()
+    unresolved = String[]
+    ambiguous = String[]
+
+    for item in raw_overrides
+        if item isa Integer
+            push!(injury_ids, Int(item))
+            continue
+        end
+
+        name = _normalize_player_name(String(item))
+        if isempty(name)
+            continue
+        end
+
+        matched_ids = get(player_name_index, name, Int[])
+        if isempty(matched_ids)
+            push!(unresolved, String(item))
+            continue
+        end
+
+        if length(matched_ids) > 1
+            push!(ambiguous, String(item))
+        end
+
+        for p_id in matched_ids
+            push!(injury_ids, p_id)
+        end
+    end
+
+    return injury_ids, unresolved, ambiguous
+end
+
+function _apply_manual_event_to_node!(
+    node::ScenarioNode,
+    node_id::Int,
+    stochastic_cfg::StochasticConfig,
+    player_name_index::Dict{String, Vector{Int}}
+)
+    event = get(stochastic_cfg.manual_node_events, node_id, nothing)
+    if isnothing(event)
+        return Dict{String, Any}()
+    end
+
+    event_state = Dict{String, Any}()
+
+    label = get(event, "label", "")
+    if !isempty(strip(String(label)))
+        node.metadata["manual_label"] = String(label)
+    end
+
+    if haskey(event, "tactical_override")
+        scheme = String(event["tactical_override"])
+        node.metadata["tactical_override"] = scheme
+        event_state["tactical_override"] = scheme
+
+        if haskey(event, "position_requirements")
+            empty!(node.position_requirements)
+            for (pos, count) in event["position_requirements"]
+                node.position_requirements[String(pos)] = Int(count)
+            end
+        end
+    end
+
+    if haskey(event, "market_shock")
+        event_state["market_shock"] = Float64(event["market_shock"])
+        node.metadata["manual_market_shock"] = Float64(event["market_shock"])
+    end
+
+    if haskey(event, "chemistry_bonus")
+        event_state["chemistry_bonus"] = Float64(event["chemistry_bonus"])
+        node.metadata["manual_chemistry_bonus"] = Float64(event["chemistry_bonus"])
+    end
+
+    if haskey(event, "injury_overrides")
+        injury_ids, unresolved, ambiguous = _resolve_manual_injury_ids(event["injury_overrides"], player_name_index)
+        event_state["forced_injury_ids"] = injury_ids
+        node.metadata["manual_injury_ids"] = sort(collect(injury_ids))
+
+        if !isempty(unresolved)
+            @warn "Unresolved manual injury overrides at node $node_id: $(join(unresolved, ", "))"
+        end
+        if !isempty(ambiguous)
+            @warn "Ambiguous manual injury override names at node $node_id (mapped to multiple ids): $(join(ambiguous, ", "))"
+        end
+    end
+
+    return event_state
+end
+
 """
 Simulates stochastic evolution over a scenario tree using node indexing.
 
@@ -210,6 +375,7 @@ function generate_stochastic_projections(
     starter_allowed_map = Dict{Tuple{Int, Int}, Int}()
     sell_allowed_map = Dict{Tuple{Int, Int}, Int}()
     chemistry_multiplier_map = Dict{Int, Float64}()
+    player_name_index = _build_player_name_index(df_players)
 
     # Cache immutable player attributes for performance and stable lookups.
     player_ids = Int.(df_players.player_id)
@@ -221,9 +387,14 @@ function generate_stochastic_projections(
     root_id = tree.root_id
 
     # Root node is deterministic initial state (no anticipation needed).
-    chemistry_multiplier_map[root_id] = 1.0
     root_node = tree.nodes[root_id]
-    root_node.metadata["chemistry_multiplier"] = 1.0
+    root_event_state = _apply_manual_event_to_node!(root_node, root_id, stochastic_cfg, player_name_index)
+
+    root_chemistry_multiplier = haskey(root_event_state, "chemistry_bonus") ? Float64(root_event_state["chemistry_bonus"]) : 1.0
+    chemistry_multiplier_map[root_id] = root_chemistry_multiplier
+    root_node.metadata["chemistry_multiplier"] = root_chemistry_multiplier
+
+    root_injury_ids = haskey(root_event_state, "forced_injury_ids") ? root_event_state["forced_injury_ids"] : Set{Int}()
 
     for p_id in player_ids
         root_ovr = round(Int, base_ovr_by_player[p_id])
@@ -238,10 +409,15 @@ function generate_stochastic_projections(
         growth_coeff = max(0.02, 0.28 - (0.01 * root_age))
         growth_potential_node_map[(p_id, root_id)] = round(gap * growth_coeff, digits=2)
 
-        starter_allowed_map[(p_id, root_id)] = 1
-        sell_allowed_map[(p_id, root_id)] = 1
-        root_node.sell_allowed[p_id] = true
+        injured_root = p_id in root_injury_ids
+        starter_allowed_map[(p_id, root_id)] = injured_root ? 0 : 1
+        sell_allowed_map[(p_id, root_id)] = injured_root ? 0 : 1
+        root_node.sell_allowed[p_id] = !injured_root
+        if injured_root
+            push!(root_node.injury_players, p_id)
+        end
     end
+    root_node.metadata["injury_count"] = length(root_node.injury_players)
 
     stage_ids = sort(collect(keys(tree.nodes_by_stage)))
 
@@ -254,6 +430,8 @@ function generate_stochastic_projections(
         for node_id in node_ids
             node = tree.nodes[node_id]
             parent_id = something(node.parent_id, root_id)
+            event_state = _apply_manual_event_to_node!(node, node_id, stochastic_cfg, player_name_index)
+            forced_injury_ids = haskey(event_state, "forced_injury_ids") ? event_state["forced_injury_ids"] : Set{Int}()
 
             conflict_occurs = rand(rng) < stochastic_cfg.chemistry_conflict_probability
             chemistry_multiplier = if conflict_occurs
@@ -261,11 +439,17 @@ function generate_stochastic_projections(
             else
                 1.0
             end
+            if haskey(event_state, "chemistry_bonus")
+                chemistry_multiplier = Float64(event_state["chemistry_bonus"])
+            end
             chemistry_multiplier_map[node_id] = chemistry_multiplier
             node.metadata["chemistry_multiplier"] = chemistry_multiplier
 
             # Node-level market noise creates coherent branch movement across players.
             branch_market_shock = randn(rng) * value_sigma * 0.15
+            if haskey(event_state, "market_shock")
+                branch_market_shock += Float64(event_state["market_shock"])
+            end
             node.metadata["branch_market_shock"] = branch_market_shock
 
             for p_id in player_ids
@@ -297,7 +481,7 @@ function generate_stochastic_projections(
                 growth_coeff = max(0.02, 0.28 - (0.01 * det_age))
                 growth_potential_node_map[(p_id, node_id)] = round(gap * growth_coeff, digits=2)
 
-                injured_now = rand(rng) < stochastic_cfg.injury_probability
+                injured_now = (rand(rng) < stochastic_cfg.injury_probability) || (p_id in forced_injury_ids)
                 starter_allowed_map[(p_id, node_id)] = injured_now ? 0 : 1
                 sell_allowed_map[(p_id, node_id)] = injured_now ? 0 : 1
 
@@ -571,6 +755,7 @@ function export_node_analysis(
         p_id = Int(row.player_id)
 
         for (node_id, node) in sorted_nodes
+            effective_scheme = get_effective_tactical_scheme(node)
             push!(rows, (
                 player_id = p_id,
                 name = row.name,
@@ -579,7 +764,8 @@ function export_node_analysis(
                 parent_id = isnothing(node.parent_id) ? -1 : node.parent_id,
                 branch_probability = node.branch_probability,
                 cumulative_probability = node.cumulative_probability,
-                tactical_scheme = node.tactical_scheme,
+                tactical_scheme = effective_scheme,
+                scenario_label = get(node.metadata, "manual_label", missing),
                 chemistry_multiplier = Float64(get(node.metadata, "chemistry_multiplier", 1.0)),
                 ovr = ovr_node_map[(p_id, node_id)],
                 market_value_eur = round(value_node_map[(p_id, node_id)], digits=0),
