@@ -97,6 +97,8 @@ function tree_to_dataframe(data::ModelDataStochastic)
     for n in data.node_ids
         node = data.tree.nodes[n]
         parent = data.parent_by_node[n]
+        effective_scheme = get_effective_tactical_scheme(node)
+        scenario_label = get(node.metadata, "manual_label", missing)
 
         push!(rows, (
             node_id = n,
@@ -104,7 +106,8 @@ function tree_to_dataframe(data::ModelDataStochastic)
             stage = data.stage_by_node[n],
             branch_probability = node.branch_probability,
             cumulative_probability = data.probability_by_node[n],
-            tactical_scheme = node.tactical_scheme,
+            tactical_scheme = effective_scheme,
+            scenario_label = scenario_label,
             is_leaf = n in leaf_set,
             children_count = length(node.children_ids),
             path = join(string.(data.path_by_node[n]), "->")
@@ -137,6 +140,7 @@ function extract_stochastic_results(
         stage_n = data.stage_by_node[n]
         prob_n = data.probability_by_node[n]
         node = data.tree.nodes[n]
+        effective_scheme = get_effective_tactical_scheme(node)
         path_id = join(string.(data.path_by_node[n]), "->")
 
         for j in J
@@ -152,7 +156,7 @@ function extract_stochastic_results(
                     stage = stage_n,
                     cumulative_probability = prob_n,
                     path_id = path_id,
-                    tactical_scheme = node.tactical_scheme,
+                    tactical_scheme = effective_scheme,
                     player_id = j,
                     in_squad = x_val,
                     is_starter = y_val,
@@ -189,6 +193,7 @@ function extract_stochastic_results(
     for n in N
         stage_n = data.stage_by_node[n]
         node = data.tree.nodes[n]
+        effective_scheme = get_effective_tactical_scheme(node)
 
         for (pos, required_count) in node.position_requirements
             players_in_pos = [j for j in J if pos_groups[j] == pos]
@@ -197,7 +202,7 @@ function extract_stochastic_results(
             push!(diagnostics_rows, (
                 node_id = n,
                 stage = stage_n,
-                tactical_scheme = node.tactical_scheme,
+                tactical_scheme = effective_scheme,
                 pos_group = pos,
                 required_count = required_count,
                 actual_starters = starters_count,
