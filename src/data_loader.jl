@@ -112,7 +112,7 @@ function filter_top_k_players_by_position(
 
     required_cols = [:player_id, :pos_group, :overall_rating, :potential, :value]
     for col in required_cols
-        if !(col in names(df))
+        if !hasproperty(df, col)
             error("Cannot apply top-K filter: missing required column '$col'.")
         end
     end
