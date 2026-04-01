@@ -320,7 +320,7 @@ function load_experiment_config(config_path::String=DEFAULT_EXPERIMENT_CONFIG_PA
     signing_bonus_rate = Float64(get(constraints_cfg, "signing_bonus_rate", 0.5))
     salary_cap_multiplier_initial = Float64(get(constraints_cfg, "salary_cap_multiplier_initial", 1.2))
     salary_cap_window_factor = Float64(get(constraints_cfg, "salary_cap_window_factor", 1.0))
-    salary_cap_penalty = Float64(get(constraints_cfg, "salary_cap_penalty", 1e5))
+    salary_cap_penalty = Float64(get(constraints_cfg, "salary_cap_penalty", P_SALARIO))
     if min_squad_size > max_squad_size
         error("constraints.min_squad_size cannot be greater than constraints.max_squad_size.")
     end
@@ -610,6 +610,87 @@ function run_optimization(df::DataFrame, ovr_map::Dict, value_map::Dict, cost_ma
 end
 
 """
+    run_optimization_stochastic(df::DataFrame, deterministic_cost_map::Dict, stochastic_bundle;
+                                initial_budget::Float64=150e6,
+                                initial_squad_strategy::String="top_value")
+
+Runs the node-indexed stochastic optimization model and exports node-level outputs.
+"""
+function run_optimization_stochastic(
+    df::DataFrame,
+    deterministic_cost_map::Dict,
+    stochastic_bundle;
+    initial_budget::Float64 = 150e6,
+    seasonal_revenue::Float64 = 50e6,
+    initial_squad_strategy::String = "top_value",
+    model_params_override::Union{Nothing,ModelParameters} = nothing
+)
+    println("\n" * "="^60)
+    println("🌳 STOCHASTIC SQUAD OPTIMIZATION MODULE")
+    println("="^60)
+
+    println("🎛️  Configuring model parameters...")
+
+    model_params = isnothing(model_params_override) ? ModelParameters(
+        initial_budget = initial_budget,
+        seasonal_revenue = seasonal_revenue
+    ) : model_params_override
+
+    root_id = stochastic_bundle.tree.root_id
+    default_scheme = first(sort(collect(keys(model_params.formation_catalog))))
+
+    root_cost_map = Dict{Tuple{Int, Int}, Float64}(
+        (Int(id), 0) => stochastic_bundle.cost_map[(Int(id), root_id)] for id in df.player_id
+    )
+
+    println("\n📋 Selecting initial squad (strategy: $initial_squad_strategy)...")
+    initial_squad = if startswith(initial_squad_strategy, "team:")
+        team_name = replace(initial_squad_strategy, "team:" => "")
+        normalized_team_name = strip(lowercase(team_name))
+        team_mask = map(name -> !ismissing(name) && strip(lowercase(String(name))) == normalized_team_name, df.club_name)
+        team_players = Int.(df[team_mask, :player_id])
+
+        if isempty(team_players)
+            @warn "Team '$team_name' not found. Falling back to top_value strategy."
+            initial_scheme = get(model_params.formation_by_window, 0, default_scheme)
+            initial_formation = model_params.formation_catalog[initial_scheme]
+            Int.(select_top_value_squad(df, root_cost_map, 0, initial_budget, initial_formation))
+        else
+            println("   Selected $(length(team_players)) players from $team_name")
+            team_players
+        end
+    elseif initial_squad_strategy == "top_value"
+        initial_scheme = get(model_params.formation_by_window, 0, default_scheme)
+        initial_formation = model_params.formation_catalog[initial_scheme]
+        Int.(select_top_value_squad(df, root_cost_map, 0, initial_budget, initial_formation))
+    else
+        error("Invalid initial_squad_strategy: $initial_squad_strategy")
+    end
+
+    println("   ✅ Initial squad size: $(length(initial_squad)) players")
+
+    println("\n📊 Preparing stochastic optimization data...")
+    stochastic_data = build_stochastic_model_data(
+        df,
+        stochastic_bundle,
+        initial_squad,
+        model_params.formation_catalog
+    )
+
+    model = build_stochastic_squad_optimization_model(stochastic_data, model_params, verbose=true)
+    results = solve_stochastic_model(model, stochastic_data, model_params, verbose=true)
+
+    println("\n💾 Exporting stochastic results...")
+    export_stochastic_results(results, stochastic_data, "output")
+
+    println("\n" * "="^60)
+    println("✅ STOCHASTIC OPTIMIZATION COMPLETE!")
+    println("="^60)
+
+    return results
+end
+
+"""
     select_top_value_squad(df::DataFrame, cost_map::Dict, window::Int, budget::Float64, formation::Dict{String, Int})
 
 Selects the best value-for-money squad within budget constraints using a greedy heuristic.
@@ -717,12 +798,6 @@ function main()
         scenario_tree = exp_cfg.scenario_tree
     )
 
-    if exp_cfg.stochastic_config.enabled && !isnothing(stochastic_bundle)
-        println("\nℹ️  Stochastic data pipeline is active.")
-        println("   Node-indexed outputs are available in data/processed/player_node_audit.csv.")
-        println("   Optimization model is still deterministic and will be migrated in Phase 3.")
-    end
-
     # Check if optimization dependencies are available
     println("\n" * "="^60)
     println("⚙️  CHECKING OPTIMIZATION DEPENDENCIES...")
@@ -732,15 +807,26 @@ function main()
         println("✅ JuMP and Gurobi are available!")
 
         try
-            # Run optimization
-            results = run_optimization(
-                df, ovr_map, value_map, cost_map, growth_potential_map, wage_map,
-                initial_budget = exp_cfg.model_params.initial_budget,
-                seasonal_revenue = exp_cfg.model_params.seasonal_revenue,
-                initial_squad_strategy = exp_cfg.initial_squad_strategy,
-                num_windows = exp_cfg.num_windows,
-                model_params_override = exp_cfg.model_params
-            )
+            results = if exp_cfg.stochastic_config.enabled && !isnothing(stochastic_bundle)
+                run_optimization_stochastic(
+                    df,
+                    cost_map,
+                    stochastic_bundle,
+                    initial_budget = exp_cfg.model_params.initial_budget,
+                    seasonal_revenue = exp_cfg.model_params.seasonal_revenue,
+                    initial_squad_strategy = exp_cfg.initial_squad_strategy,
+                    model_params_override = exp_cfg.model_params
+                )
+            else
+                run_optimization(
+                    df, ovr_map, value_map, cost_map, growth_potential_map, wage_map,
+                    initial_budget = exp_cfg.model_params.initial_budget,
+                    seasonal_revenue = exp_cfg.model_params.seasonal_revenue,
+                    initial_squad_strategy = exp_cfg.initial_squad_strategy,
+                    num_windows = exp_cfg.num_windows,
+                    model_params_override = exp_cfg.model_params
+                )
+            end
 
             println("\n" * "="^60)
             println("🎉 PIPELINE COMPLETE!")
