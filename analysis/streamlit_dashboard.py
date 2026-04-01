@@ -13,19 +13,24 @@ SQUAD_DECISIONS_NODES_PATH = OUTPUT_DIR / "squad_decisions_nodes.csv"
 BUDGET_EVOLUTION_NODES_PATH = OUTPUT_DIR / "budget_evolution_nodes.csv"
 FORMATION_DIAGNOSTICS_NODES_PATH = OUTPUT_DIR / "formation_diagnostics_nodes.csv"
 TREE_METADATA_PATH = OUTPUT_DIR / "tree_metadata.csv"
+PLAYER_NODE_AUDIT_PATH = ROOT / "data" / "processed" / "player_node_audit.csv"
 DET_RESULT_PATHS = [SQUAD_DECISIONS_PATH, BUDGET_EVOLUTION_PATH]
 STOCH_RESULT_PATHS = [SQUAD_DECISIONS_NODES_PATH, BUDGET_EVOLUTION_NODES_PATH]
 
-FIELD_X_SCALE = 1.15
+FIELD_WIDTH_RATIO = 0.65
+BASE_FIELD_X_SCALE = 1.15
+FIELD_X_SCALE = BASE_FIELD_X_SCALE * FIELD_WIDTH_RATIO
 FIELD_X_MAX = 100 * FIELD_X_SCALE
-RESERVE_PANEL_X0 = 121
-RESERVE_PANEL_X1 = 177
+BASE_RESERVE_PANEL_X0 = 121
+BASE_RESERVE_PANEL_X1 = 177
+RESERVE_PANEL_X0 = BASE_RESERVE_PANEL_X0 * FIELD_WIDTH_RATIO
+RESERVE_PANEL_X1 = RESERVE_PANEL_X0 + ((BASE_RESERVE_PANEL_X1 - BASE_RESERVE_PANEL_X0) * FIELD_WIDTH_RATIO)
 RESERVE_LEFT_TEXT_X = RESERVE_PANEL_X0 + 2
 RESERVE_OVR_X = RESERVE_PANEL_X1 - 4
 RESERVE_EVO_X = RESERVE_OVR_X - 2
-FINANCE_PANEL_X0 = 181
-FINANCE_PANEL_X1 = 215
-PLOT_X_MAX = 220
+PLOT_X_MAX = RESERVE_PANEL_X1 + 4
+PITCH_FIG_HEIGHT = 760
+MINI_TREE_HEIGHT_RATIO = 0.56
 
 POSITION_PRIORITY = {
     "GK": 1,
@@ -38,15 +43,27 @@ POSITION_PRIORITY = {
     "ST": 6,
 }
 
-POSITION_COORDS = {
-    "GK": [(50, 8)],
-    "CB": [(36, 26), (64, 26)],
-    "LB": [(12, 35)],
-    "RB": [(88, 35)],
-    "CM": [(30, 52), (50, 57), (70, 52)],
-    "LW": [(15, 84)],
-    "RW": [(85, 84)],
-    "ST": [(50, 92), (40, 90), (60, 90)],
+FORMATION_POSITION_COORDS = {
+    "433": {
+        "GK": [(50, 8)],
+        "CB": [(36, 26), (64, 26)],
+        "LB": [(12, 35)],
+        "RB": [(88, 35)],
+        "CM": [(30, 52), (50, 58), (70, 52)],
+        "LW": [(15, 84)],
+        "RW": [(85, 84)],
+        "ST": [(50, 92), (40, 90), (60, 90)],
+    },
+    "442": {
+        "GK": [(50, 8)],
+        "CB": [(36, 26), (64, 26)],
+        "LB": [(12, 35)],
+        "RB": [(88, 35)],
+        "CM": [(38, 54), (62, 54), (50, 58)],
+        "LW": [(16, 64)],
+        "RW": [(84, 64)],
+        "ST": [(44, 88), (56, 80), (50, 92)],
+    },
 }
 
 
@@ -158,8 +175,105 @@ def _position_key(pos: str) -> tuple[int, str]:
     return (POSITION_PRIORITY.get(pos, 99), pos)
 
 
-def _allocate_coord(pos: str, usage_count: int) -> tuple[float, float]:
-    coords = POSITION_COORDS.get(pos, [(50, 50)])
+def _get_position_coords(formation_scheme: str | None) -> dict[str, list[tuple[float, float]]]:
+    if formation_scheme is None:
+        return FORMATION_POSITION_COORDS["433"]
+    scheme_key = str(formation_scheme).strip()
+    return FORMATION_POSITION_COORDS.get(scheme_key, FORMATION_POSITION_COORDS["433"])
+
+
+def _sort_reserves_by_priority(reserves: pd.DataFrame) -> pd.DataFrame:
+    if reserves.empty:
+        return reserves
+
+    df = reserves.copy()
+    df["pos_priority"] = df["pos_group"].map(POSITION_PRIORITY).fillna(99).astype(int)
+    df["injury_sort"] = pd.to_numeric(df.get("injured", 0), errors="coerce").fillna(0).astype(int)
+    df = df.sort_values(by=["injury_sort", "pos_priority", "ovr"], ascending=[True, True, False])
+    return df.drop(columns=["pos_priority", "injury_sort"], errors="ignore")
+
+
+def _with_display_best_xi(window_df: pd.DataFrame, form_window: pd.DataFrame) -> pd.DataFrame:
+    """Build a display-only best XI by OVR, respecting positional requirements and availability."""
+    df = window_df.copy()
+    df["is_starter_display"] = 0
+
+    squad = df[df["in_squad"] == 1].copy()
+    if squad.empty:
+        return df
+
+    if "starter_allowed" not in squad.columns:
+        squad["starter_allowed"] = 1
+    squad["starter_allowed"] = pd.to_numeric(squad["starter_allowed"], errors="coerce").fillna(1).astype(int)
+
+    req_map: dict[str, int] = {}
+    if not form_window.empty and {"pos_group", "required_count"}.issubset(form_window.columns):
+        req_series = (
+            form_window[["pos_group", "required_count"]]
+            .dropna(subset=["pos_group", "required_count"])
+            .groupby("pos_group", as_index=True)["required_count"]
+            .max()
+        )
+        req_map = {
+            str(pos): int(cnt)
+            for pos, cnt in req_series.items()
+            if int(cnt) > 0
+        }
+
+    if not req_map:
+        req_series = squad.groupby("pos_group", as_index=True)["is_starter"].sum()
+        req_map = {
+            str(pos): int(cnt)
+            for pos, cnt in req_series.items()
+            if int(cnt) > 0
+        }
+
+    target_total = int(sum(req_map.values())) if req_map else min(11, len(squad))
+    selected_index: list[int] = []
+
+    for pos in sorted(req_map.keys(), key=lambda p: POSITION_PRIORITY.get(p, 99)):
+        need = int(req_map[pos])
+        if need <= 0:
+            continue
+
+        pool = squad[(squad["pos_group"] == pos) & (squad["starter_allowed"] == 1)].copy()
+        if pool.empty:
+            pool = squad[squad["pos_group"] == pos].copy()
+
+        if not pool.empty:
+            pool = pool.sort_values(by=["ovr"], ascending=False)
+            selected_index.extend(pool.head(need).index.tolist())
+
+    selected_index = list(dict.fromkeys(selected_index))
+
+    if len(selected_index) < target_total:
+        remaining = squad.loc[~squad.index.isin(selected_index)].copy()
+        remaining["pos_priority"] = remaining["pos_group"].map(POSITION_PRIORITY).fillna(99).astype(int)
+
+        preferred = remaining[remaining["starter_allowed"] == 1].sort_values(
+            by=["ovr", "pos_priority"],
+            ascending=[False, True],
+        )
+        fallback = remaining[remaining["starter_allowed"] != 1].sort_values(
+            by=["ovr", "pos_priority"],
+            ascending=[False, True],
+        )
+
+        needed = target_total - len(selected_index)
+        extra = preferred.head(needed)
+        if len(extra) < needed:
+            extra = pd.concat([extra, fallback.head(needed - len(extra))], axis=0)
+
+        selected_index.extend(extra.index.tolist())
+        selected_index = list(dict.fromkeys(selected_index))
+
+    df.loc[df.index.isin(selected_index), "is_starter_display"] = 1
+    return df
+
+
+def _allocate_coord(pos: str, usage_count: int, formation_scheme: str | None = None) -> tuple[float, float]:
+    formation_coords = _get_position_coords(formation_scheme)
+    coords = formation_coords.get(pos, [(50, 50)])
     if usage_count < len(coords):
         x, y = coords[usage_count]
         return (x * FIELD_X_SCALE, y)
@@ -221,7 +335,43 @@ def load_data(preferred_mode: str = "auto") -> tuple[pd.DataFrame, pd.DataFrame,
         decisions["origin_league"] = ""
     decisions["origin_league"] = decisions["origin_league"].fillna("")
 
+    if is_stochastic and PLAYER_NODE_AUDIT_PATH.exists():
+        injury_df = pd.read_csv(PLAYER_NODE_AUDIT_PATH)
+        required_cols = {"node_id", "player_id", "starter_allowed"}
+        if required_cols.issubset(injury_df.columns):
+            if "stage" in injury_df.columns and "window" not in injury_df.columns:
+                injury_df = injury_df.rename(columns={"stage": "window"})
+
+            injury_df["node_id"] = pd.to_numeric(injury_df["node_id"], errors="coerce")
+            injury_df["window"] = pd.to_numeric(injury_df["window"], errors="coerce")
+            injury_df["player_id"] = pd.to_numeric(injury_df["player_id"], errors="coerce")
+            injury_df["starter_allowed"] = pd.to_numeric(injury_df["starter_allowed"], errors="coerce")
+            injury_df = injury_df.dropna(subset=["node_id", "window", "player_id", "starter_allowed"])
+
+            injury_df["node_id"] = injury_df["node_id"].astype(int)
+            injury_df["window"] = injury_df["window"].astype(int)
+            injury_df["player_id"] = injury_df["player_id"].astype(int)
+            injury_df["starter_allowed"] = injury_df["starter_allowed"].astype(int)
+
+            injury_df = injury_df[["node_id", "window", "player_id", "starter_allowed"]].drop_duplicates(
+                subset=["node_id", "window", "player_id"], keep="last"
+            )
+
+            decisions = decisions.merge(injury_df, on=["node_id", "window", "player_id"], how="left")
+            decisions["starter_allowed"] = decisions["starter_allowed"].fillna(1).astype(int)
+        else:
+            decisions["starter_allowed"] = 1
+    else:
+        decisions["starter_allowed"] = 1
+
+    decisions["injured"] = (decisions["starter_allowed"] == 0).astype(int)
+
     return decisions, budget, formation, tree_meta, is_stochastic, selected_mode
+
+
+def _injury_badge(row: pd.Series) -> str:
+    injured = int(row.get("injured", 0)) == 1
+    return "<b><span style='color:#D42424'>✚</span></b>" if injured else ""
 
 
 def enrich_with_evolution(decisions: pd.DataFrame, tree_meta: pd.DataFrame | None = None) -> pd.DataFrame:
@@ -275,21 +425,23 @@ def summarize_window_finance(window_df: pd.DataFrame, budget_df: pd.DataFrame, w
     }
 
 
-def build_pitch_figure(window_df: pd.DataFrame, finance: dict, selected_window: int) -> go.Figure:
+def build_pitch_figure(window_df: pd.DataFrame, selected_window: int, formation_scheme: str | None = None) -> go.Figure:
     squad = window_df[window_df["in_squad"] == 1].copy()
-    starters = squad[squad["is_starter"] == 1].copy()
-    reserves = squad[squad["is_starter"] == 0].copy()
+    starter_col = "is_starter_display" if "is_starter_display" in squad.columns else "is_starter"
+    starters = squad[squad[starter_col] == 1].copy()
+    reserves = squad[squad[starter_col] == 0].copy()
 
     starters = starters.sort_values(by=["pos_group", "ovr"], ascending=[True, False])
-    reserves = reserves.sort_values(by=["pos_group", "ovr"], ascending=[True, False])
+    reserves = _sort_reserves_by_priority(reserves)
 
-    usage = {k: 0 for k in POSITION_COORDS}
+    active_coords = _get_position_coords(formation_scheme)
+    usage = {k: 0 for k in active_coords}
     starter_x, starter_y = [], []
     starter_ovr, starter_hover, starter_label = [], [], []
 
     for _, row in starters.iterrows():
         pos = row["pos_group"]
-        coord = _allocate_coord(pos, usage.get(pos, 0))
+        coord = _allocate_coord(pos, usage.get(pos, 0), formation_scheme)
         usage[pos] = usage.get(pos, 0) + 1
 
         starter_x.append(coord[0])
@@ -299,15 +451,18 @@ def build_pitch_figure(window_df: pd.DataFrame, finance: dict, selected_window: 
         ovr_prev = None if pd.isna(row["ovr_prev"]) else _safe_int(row["ovr_prev"])
         evo_txt = _evolution_text(ovr_now, ovr_prev)
         evo_badge = _evolution_badge(ovr_now, ovr_prev)
+        injury_badge = _injury_badge(row)
+        injury_status = "Injured" if int(row.get("injured", 0)) == 1 else "Available"
         name_short = _display_name(str(row["name"]), max_len=20)
 
         starter_ovr.append(str(ovr_now))
-        starter_label.append(f"<b>{name_short}</b> {evo_badge}".strip())
+        starter_label.append(f"<b>{name_short}</b> {injury_badge} {evo_badge}".strip())
         starter_hover.append(
             "<br>".join(
                 [
                     f"<b>{row['name']}</b>",
                     f"Position: {pos}",
+                    f"Status: {injury_status}",
                     f"OVR: {ovr_now} {evo_txt}".strip(),
                     _origin_text(row),
                     f"Market Value: {_money_millions(float(row['market_value']))}",
@@ -325,13 +480,15 @@ def build_pitch_figure(window_df: pd.DataFrame, finance: dict, selected_window: 
         ovr_prev = None if pd.isna(row["ovr_prev"]) else _safe_int(row["ovr_prev"])
         evo_txt = _evolution_text(ovr_now, ovr_prev)
         evo_badge = _evolution_badge(ovr_now, ovr_prev)
+        injury_badge = _injury_badge(row)
+        injury_status = "Injured" if int(row.get("injured", 0)) == 1 else "Available"
         reserve_name = _display_name(str(row["name"]), max_len=24)
 
         reserve_left_x.append(RESERVE_LEFT_TEXT_X)
         reserve_evo_x.append(RESERVE_EVO_X)
         reserve_ovr_x.append(RESERVE_OVR_X)
         reserve_y.append(start_y - idx * step_y)
-        reserve_left_text.append(f"<b>{row['pos_group']}</b>  {reserve_name}".strip())
+        reserve_left_text.append(f"<b>{row['pos_group']}</b>  {reserve_name} {injury_badge}".strip())
         reserve_evo_text.append(evo_badge)
         reserve_ovr_text.append(f"<b>{ovr_now}</b>")
         reserve_hover.append(
@@ -339,23 +496,13 @@ def build_pitch_figure(window_df: pd.DataFrame, finance: dict, selected_window: 
                 [
                     f"<b>{row['name']}</b>",
                     f"Position: {row['pos_group']}",
+                    f"Status: {injury_status}",
                     f"OVR: {ovr_now} {evo_txt}".strip(),
                     _origin_text(row),
                     f"Market Value: {_money_millions(float(row['market_value']))}",
                 ]
             )
         )
-
-    finance_header = "<b>FINANCE</b>"
-    finance_body = "<br>".join(
-        [
-            f"Cash: {_money_millions(finance['cash'])}",
-            f"Deficit: {_money_millions(finance['deficit'])}",
-            f"Spent: {_money_millions(finance['spent'])}",
-            f"Sold: {_money_millions(finance['sold'])}",
-            f"Moves: +{finance['buys']} / -{finance['sells']}",
-        ]
-    )
 
     fig = go.Figure()
 
@@ -429,30 +576,6 @@ def build_pitch_figure(window_df: pd.DataFrame, finance: dict, selected_window: 
         )
     )
 
-    fig.add_trace(
-        go.Scatter(
-            x=[198],
-            y=[92],
-            mode="text",
-            text=[finance_header],
-            textfont=dict(size=15, color="white"),
-            hoverinfo="skip",
-            showlegend=False,
-        )
-    )
-
-    fig.add_trace(
-        go.Scatter(
-            x=[198],
-            y=[81],
-            mode="text",
-            text=[finance_body],
-            textfont=dict(size=12, color="#00FF88", family="Consolas"),
-            hoverinfo="skip",
-            showlegend=False,
-        )
-    )
-
     shapes = [
         dict(type="rect", x0=0, y0=0, x1=FIELD_X_MAX, y1=100, fillcolor="#4CAF50", line=dict(color="white", width=2), layer="below"),
         dict(type="line", x0=0, y0=50, x1=FIELD_X_MAX, y1=50, line=dict(color="white", width=2), layer="below"),
@@ -462,19 +585,35 @@ def build_pitch_figure(window_df: pd.DataFrame, finance: dict, selected_window: 
         dict(type="rect", x0=(30 * FIELD_X_SCALE), y0=0, x1=(70 * FIELD_X_SCALE), y1=16, line=dict(color="white", width=2), layer="below"),
         dict(type="rect", x0=(40 * FIELD_X_SCALE), y0=0, x1=(60 * FIELD_X_SCALE), y1=6, line=dict(color="white", width=2), layer="below"),
         dict(type="rect", x0=RESERVE_PANEL_X0, y0=0, x1=RESERVE_PANEL_X1, y1=100, fillcolor="#ECECEC", line=dict(width=2, color="black"), layer="below"),
-        dict(type="rect", x0=FINANCE_PANEL_X0, y0=65, x1=FINANCE_PANEL_X1, y1=100, fillcolor="#1F1F1F", line=dict(width=1, color="gray"), layer="below"),
     ]
 
     fig.update_layout(
         title=f"Squad Field View - Window {selected_window}",
         width=1650,
-        height=760,
+        height=PITCH_FIG_HEIGHT,
         margin=dict(l=20, r=20, t=60, b=20),
         plot_bgcolor="#2B2B2B",
         paper_bgcolor="#2B2B2B",
         font=dict(color="white"),
-        xaxis=dict(range=[-2, PLOT_X_MAX], showgrid=False, zeroline=False, showticklabels=False, visible=False, fixedrange=True),
-        yaxis=dict(range=[-6, 104], showgrid=False, zeroline=False, showticklabels=False, visible=False, fixedrange=True),
+        xaxis=dict(
+            range=[-2, PLOT_X_MAX],
+            showgrid=False,
+            zeroline=False,
+            showticklabels=False,
+            visible=False,
+            fixedrange=True,
+            constrain="domain",
+        ),
+        yaxis=dict(
+            range=[-6, 104],
+            showgrid=False,
+            zeroline=False,
+            showticklabels=False,
+            visible=False,
+            fixedrange=True,
+            scaleanchor="x",
+            scaleratio=1,
+        ),
         shapes=shapes,
         annotations=[
             dict(x=(RESERVE_PANEL_X0 + 2), y=103, text="<b>RESERVES</b>", showarrow=False, font=dict(size=14, color="white"), xanchor="left"),
@@ -486,15 +625,16 @@ def build_pitch_figure(window_df: pd.DataFrame, finance: dict, selected_window: 
 
 def build_window_tables(window_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     squad = window_df[window_df["in_squad"] == 1].copy()
-    starters = squad[squad["is_starter"] == 1].copy()
-    reserves = squad[squad["is_starter"] == 0].copy()
+    starter_col = "is_starter_display" if "is_starter_display" in squad.columns else "is_starter"
+    starters = squad[squad[starter_col] == 1].copy()
+    reserves = squad[squad[starter_col] == 0].copy()
 
     for df in [starters, reserves]:
         df["ovr_prev"] = df["ovr_prev"].fillna(df["ovr"])
         df["ovr_delta"] = (df["ovr"] - df["ovr_prev"]).astype(int)
 
     starters = starters.sort_values(by=["pos_group", "ovr"], ascending=[True, False])
-    reserves = reserves.sort_values(by=["pos_group", "ovr"], ascending=[True, False])
+    reserves = _sort_reserves_by_priority(reserves)
 
     starter_cols = ["name", "pos_group", "ovr", "ovr_delta", "market_value", "acquisition_cost"]
     reserve_cols = ["name", "pos_group", "ovr", "ovr_delta", "market_value"]
@@ -538,7 +678,15 @@ def _build_node_label(row: pd.Series) -> str:
     parent_txt = "ROOT" if pd.isna(parent_val) else str(int(parent_val))
     scheme = row.get("tactical_scheme", "N/A")
     path = str(row.get("path", ""))
-    return f"Node {node_id} | p={branch:.3f} | cum={cumulative:.3f} | parent={parent_txt} | scheme={scheme} | {path}"
+    scenario_label = row.get("scenario_label", "")
+    if pd.isna(scenario_label):
+        scenario_label = ""
+    scenario_label = str(scenario_label).strip()
+
+    base = f"Node {node_id} | p={branch:.3f} | cum={cumulative:.3f} | parent={parent_txt} | scheme={scheme} | {path}"
+    if scenario_label:
+        return f"{scenario_label} | {base}"
+    return base
 
 
 def _centered_tree_y_coords(df: pd.DataFrame) -> dict[int, float]:
@@ -647,7 +795,13 @@ def _extract_clicked_node(chart_state, valid_nodes: set[int] | None = None) -> i
     return None
 
 
-def build_scenario_tree_figure(tree_meta: pd.DataFrame, selected_node: int, selected_stage: int) -> go.Figure:
+def build_scenario_tree_figure(
+    tree_meta: pd.DataFrame,
+    selected_node: int,
+    selected_stage: int,
+    mini_mode: bool = False,
+    mini_height: int | None = None,
+) -> go.Figure:
     df = _prepare_tree_meta(tree_meta)
 
     if df.empty or "parent_id" not in df.columns:
@@ -675,6 +829,8 @@ def build_scenario_tree_figure(tree_meta: pd.DataFrame, selected_node: int, sele
             edge_x.extend([x_map[parent_stage], x_map[child_stage], None])
             edge_y.extend([y_coords[parent_id], y_coords[node_id], None])
 
+    marker_base = 12 if mini_mode else 18
+    marker_scale = 28 if mini_mode else 42
     node_x, node_y, marker_size, marker_color, hover_text, node_text, node_custom = [], [], [], [], [], [], []
     for _, row in df.iterrows():
         node_id = int(row["node_id"])
@@ -684,7 +840,7 @@ def build_scenario_tree_figure(tree_meta: pd.DataFrame, selected_node: int, sele
 
         node_x.append(float(x_map[stage]))
         node_y.append(y_coords[node_id])
-        marker_size.append(18 + 42 * max(0.0, cumulative))
+        marker_size.append(marker_base + marker_scale * max(0.0, cumulative))
 
         if node_id == selected_node:
             marker_color.append("#F39C12")
@@ -695,10 +851,14 @@ def build_scenario_tree_figure(tree_meta: pd.DataFrame, selected_node: int, sele
 
         path = str(row.get("path", ""))
         tactical = row.get("tactical_scheme", "N/A")
+        scenario_label = str(row.get("scenario_label", "")).strip()
+        if scenario_label.lower() == "nan":
+            scenario_label = ""
         hover_text.append(
             "<br>".join(
                 [
                     f"<b>Node {node_id}</b>",
+                    f"Label: {scenario_label}" if scenario_label else "Label: (none)",
                     f"Stage: {stage}",
                     f"Branch Probability: {branch:.3f}",
                     f"Cumulative Probability: {cumulative:.3f}",
@@ -740,9 +900,9 @@ def build_scenario_tree_figure(tree_meta: pd.DataFrame, selected_node: int, sele
     stage_labels = [f"Stage {s}" for s in stage_order]
 
     fig.update_layout(
-        title="Scenario Tree Map (Horizontal Flow)",
-        width=max(950, 240 * max(1, len(stage_order))),
-        height=max(280, 120 + 32 * max(1, len([nid for nid in y_coords if nid in df["node_id"].tolist()]))),
+        title=" Node Tree" if mini_mode else "Scenario Tree Map (Horizontal Flow)",
+        width=None if mini_mode else max(950, 240 * max(1, len(stage_order))),
+        height=mini_height if (mini_mode and mini_height is not None) else (max(240, 100 + 18 * max(1, len([nid for nid in y_coords if nid in df["node_id"].tolist()]))) if mini_mode else max(280, 120 + 32 * max(1, len([nid for nid in y_coords if nid in df["node_id"].tolist()])))),
         margin=dict(l=20, r=20, t=55, b=20),
         plot_bgcolor="#0F1720",
         paper_bgcolor="#0F1720",
@@ -865,11 +1025,6 @@ def _style_sibling_diff(df: pd.DataFrame):
 def main() -> None:
     st.set_page_config(page_title="Squad Field Dashboard", page_icon="⚽", layout="wide")
 
-    st.title("Squad Interactive Field")
-    st.caption(
-        "Interactive pitch view with starters, reserves, finance balance, and OVR evolution per window."
-    )
-
     mode_label = st.sidebar.selectbox(
         "Result Mode",
         options=["Auto", "Deterministic", "Stochastic"],
@@ -883,6 +1038,11 @@ def main() -> None:
         st.error(str(exc))
         st.info("Run: julia --project=. main.jl")
         return
+    
+    st.title("Squad Interactive Field")
+    st.caption(
+        "Interactive pitch view with starters, reserves, finance balance, and OVR evolution per window."
+    )
 
     st.sidebar.caption(f"Active dataset: {selected_mode}")
 
@@ -891,7 +1051,45 @@ def main() -> None:
 
     windows = sorted(decisions["window"].unique().tolist())
     time_label = "Stage" if is_stochastic else "Window"
-    selected_window = st.slider(time_label, min_value=min(windows), max_value=max(windows), value=min(windows), step=1)
+    window_key = "selected_window"
+    pending_window_key = "pending_selected_window"
+    pending_node_key = "pending_selected_node"
+
+    if pending_window_key in st.session_state:
+        try:
+            pending_window = int(st.session_state[pending_window_key])
+        except (TypeError, ValueError):
+            pending_window = None
+
+        if pending_window is not None and pending_window in windows:
+            st.session_state[window_key] = pending_window
+        st.session_state.pop(pending_window_key, None)
+
+    if pending_node_key in st.session_state and not prepared_tree_meta.empty:
+        try:
+            pending_node = int(st.session_state[pending_node_key])
+        except (TypeError, ValueError):
+            pending_node = None
+
+        if pending_node is not None:
+            pending_meta = prepared_tree_meta[prepared_tree_meta["node_id"] == pending_node]
+            if not pending_meta.empty:
+                pending_stage = int(pending_meta.iloc[0]["stage"])
+                st.session_state[f"selected_node_stage_{pending_stage}"] = pending_node
+        st.session_state.pop(pending_node_key, None)
+
+    if window_key not in st.session_state or int(st.session_state[window_key]) not in windows:
+        st.session_state[window_key] = min(windows)
+
+    selected_window = int(
+        st.sidebar.slider(
+            time_label,
+            min_value=min(windows),
+            max_value=max(windows),
+            step=1,
+            key=window_key,
+        )
+    )
 
     selected_node = None
     node_row = None
@@ -923,32 +1121,12 @@ def main() -> None:
 
             active_node_id = int(st.session_state[state_key])
             selected_index = max(0, node_ids_order.index(active_node_id))
-            selected_label = st.selectbox("Scenario Node", options=node_labels, index=selected_index)
+            selected_label = st.sidebar.selectbox("Scenario Node", options=node_labels, index=selected_index)
             selected_node = int(node_map[selected_label])
             st.session_state[state_key] = selected_node
             node_row = stage_meta[stage_meta["node_id"] == selected_node].iloc[0]
         else:
-            selected_node = int(st.selectbox("Scenario Node", options=nodes_in_window, index=0))
-
-        if not prepared_tree_meta.empty and {"node_id", "parent_id", "stage"}.issubset(prepared_tree_meta.columns):
-            st.subheader("Scenario Map")
-            st.caption("Horizontal tree of stochastic branches. Nodes are sized by cumulative probability.")
-            tree_fig = build_scenario_tree_figure(prepared_tree_meta, selected_node, selected_window)
-            tree_key = f"scenario_tree_stage_{selected_window}"
-            try:
-                st.plotly_chart(
-                    tree_fig,
-                    width="content",
-                    key=tree_key,
-                    on_select="rerun",
-                    selection_mode="points",
-                )
-                clicked_node = _extract_clicked_node(st.session_state.get(tree_key), valid_nodes=set(nodes_in_window))
-                if clicked_node is not None and clicked_node != selected_node:
-                    st.session_state[f"selected_node_stage_{selected_window}"] = clicked_node
-                    st.rerun()
-            except TypeError:
-                st.plotly_chart(tree_fig, width="content")
+            selected_node = int(st.sidebar.selectbox("Scenario Node", options=nodes_in_window, index=0))
 
     window_df = decisions[decisions["window"] == selected_window].copy()
     if selected_node is not None:
@@ -958,8 +1136,72 @@ def main() -> None:
         st.warning("No data found for the selected window.")
         return
 
+    form_window = formation[formation["window"] == selected_window].copy()
+    if selected_node is not None and "node_id" in form_window.columns:
+        form_window = form_window[form_window["node_id"] == selected_node].copy()
+
+    window_df = _with_display_best_xi(window_df, form_window)
+
     scheme = window_df["formation_scheme"].dropna().iloc[0] if "formation_scheme" in window_df and not window_df["formation_scheme"].dropna().empty else "N/A"
     finance = summarize_window_finance(window_df, budget, selected_window, selected_node)
+
+    show_tree_sidebar = (
+        is_stochastic
+        and selected_node is not None
+        and not prepared_tree_meta.empty
+        and {"node_id", "parent_id", "stage"}.issubset(prepared_tree_meta.columns)
+    )
+
+    if show_tree_sidebar:
+        main_col, side_col = st.columns([3.0, 2.2], gap="large")
+
+        with main_col:
+            pitch_fig = build_pitch_figure(window_df, selected_window, scheme)
+            st.plotly_chart(pitch_fig, width="stretch")
+
+        with side_col:
+            mini_tree_height = int(PITCH_FIG_HEIGHT * MINI_TREE_HEIGHT_RATIO)
+            lower_panel_height = max(160, PITCH_FIG_HEIGHT - mini_tree_height - 120)
+            tree_fig = build_scenario_tree_figure(
+                prepared_tree_meta,
+                selected_node,
+                selected_window,
+                mini_mode=True,
+                mini_height=mini_tree_height,
+            )
+            tree_key = "scenario_tree_minimap"
+
+            try:
+                st.plotly_chart(
+                    tree_fig,
+                    width="stretch",
+                    key=tree_key,
+                    on_select="rerun",
+                    selection_mode="points",
+                )
+                clicked_node = _extract_clicked_node(st.session_state.get(tree_key))
+                if clicked_node is not None and clicked_node != selected_node:
+                    clicked_meta = prepared_tree_meta[prepared_tree_meta["node_id"] == int(clicked_node)]
+                    if not clicked_meta.empty:
+                        clicked_stage = int(clicked_meta.iloc[0]["stage"])
+                        if clicked_stage in windows:
+                            st.session_state[pending_window_key] = clicked_stage
+                        st.session_state[pending_node_key] = int(clicked_node)
+                    else:
+                        st.session_state[pending_node_key] = int(clicked_node)
+                    st.rerun()
+            except TypeError:
+                st.plotly_chart(tree_fig, width="stretch")
+
+            st.subheader("Comparativo")
+            st.caption("Espaço reservado para gráfico de finanças/OVR entre cenários (em breve).")
+            st.markdown(
+                f"<div style='height: {lower_panel_height}px; border: 1px dashed #5D6D7E; border-radius: 8px; background: #111821;'></div>",
+                unsafe_allow_html=True,
+            )
+    else:
+        pitch_fig = build_pitch_figure(window_df, selected_window, scheme)
+        st.plotly_chart(pitch_fig, width="stretch")
 
     left, mid, right = st.columns([1, 1, 1])
     scheme_label = scheme if selected_node is None else f"{scheme} | Node {selected_node}"
@@ -984,9 +1226,12 @@ def main() -> None:
             is_leaf = bool(node_row.get("is_leaf", False))
             tactical = node_row.get("tactical_scheme", "N/A")
             path = str(node_row.get("path", ""))
+            scenario_label = str(node_row.get("scenario_label", "")).strip()
             st.caption(
                 f"Node type: {'Leaf' if is_leaf else 'Internal'} | Children: {children_count} | Tactical scheme: {tactical} | Path: {path}"
             )
+            if scenario_label and scenario_label.lower() != "nan":
+                st.info(f"Scenario label: {scenario_label}")
 
             if {"stage", "node_id", "cumulative_probability"}.issubset(prepared_tree_meta.columns):
                 stage_nodes = prepared_tree_meta[prepared_tree_meta["stage"] == node_row.get("stage")][["node_id", "cumulative_probability"]].copy()
@@ -1025,9 +1270,6 @@ def main() -> None:
                         )
                         st.dataframe(_style_sibling_diff(diff_tbl), width="stretch", hide_index=True)
 
-    pitch_fig = build_pitch_figure(window_df, finance, selected_window)
-    st.plotly_chart(pitch_fig, width="stretch")
-
     starters_tbl, reserves_tbl = build_window_tables(window_df)
 
     col1, col2 = st.columns(2)
@@ -1039,9 +1281,6 @@ def main() -> None:
         st.dataframe(reserves_tbl, width="stretch", hide_index=True)
 
     st.subheader("Tactical Constraint Check")
-    form_window = formation[formation["window"] == selected_window].copy()
-    if selected_node is not None and "node_id" in form_window.columns:
-        form_window = form_window[form_window["node_id"] == selected_node].copy()
 
     if not form_window.empty:
         form_window = form_window.sort_values(by="pos_group")
