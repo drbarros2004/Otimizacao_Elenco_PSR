@@ -18,6 +18,7 @@ const DEFAULT_EXPERIMENT_CONFIG_PATH = "config/experiment.toml"
 
 struct ExperimentConfig
     num_windows::Int
+    top_k_players_per_position::Union{Nothing, Int}
     initial_squad_strategy::String
     model_params::ModelParameters
     stochastic_config::StochasticConfig
@@ -93,6 +94,83 @@ function _parse_stage_probabilities(
     return probs_by_stage
 end
 
+function _parse_manual_event_node_key(raw_key::String)
+    key = lowercase(strip(raw_key))
+    match_obj = match(r"^node_(\d+)$", key)
+    if isnothing(match_obj)
+        error("scenario_tree.manual_events keys must follow 'node_<id>' format. Got '$raw_key'.")
+    end
+    return parse(Int, match_obj.captures[1])
+end
+
+function _parse_manual_events(
+    raw_manual_events,
+    formation_catalog::Dict{String, Dict{String, Int}}
+)
+    if !(raw_manual_events isa Dict)
+        error("scenario_tree.manual_events must be a TOML table.")
+    end
+
+    events = Dict{Int, Dict{String, Any}}()
+    for (raw_key, raw_event_any) in raw_manual_events
+        node_id = _parse_manual_event_node_key(String(raw_key))
+        if !(raw_event_any isa Dict)
+            error("scenario_tree.manual_events.$(raw_key) must be an inline table.")
+        end
+
+        raw_event = raw_event_any
+        event = Dict{String, Any}()
+
+        if haskey(raw_event, "label")
+            label = strip(String(raw_event["label"]))
+            if !isempty(label)
+                event["label"] = label
+            end
+        end
+
+        if haskey(raw_event, "tactical_override")
+            scheme = strip(String(raw_event["tactical_override"]))
+            if !haskey(formation_catalog, scheme)
+                error("scenario_tree.manual_events.$(raw_key).tactical_override references unknown scheme '$scheme'.")
+            end
+            event["tactical_override"] = scheme
+            event["position_requirements"] = deepcopy(formation_catalog[scheme])
+        end
+
+        if haskey(raw_event, "injury_overrides")
+            injuries_raw = raw_event["injury_overrides"]
+            if !(injuries_raw isa AbstractVector)
+                error("scenario_tree.manual_events.$(raw_key).injury_overrides must be an array of names or player_ids.")
+            end
+
+            parsed_injuries = Any[]
+            for item in injuries_raw
+                if item isa Integer
+                    push!(parsed_injuries, Int(item))
+                else
+                    txt = strip(String(item))
+                    if !isempty(txt)
+                        push!(parsed_injuries, txt)
+                    end
+                end
+            end
+            event["injury_overrides"] = parsed_injuries
+        end
+
+        if haskey(raw_event, "market_shock")
+            event["market_shock"] = Float64(raw_event["market_shock"])
+        end
+
+        if haskey(raw_event, "chemistry_bonus")
+            event["chemistry_bonus"] = Float64(raw_event["chemistry_bonus"])
+        end
+
+        events[node_id] = event
+    end
+
+    return events
+end
+
 function _parse_stochastic_config(
     cfg::Dict{String,Any},
     num_windows::Int,
@@ -116,6 +194,8 @@ function _parse_stochastic_config(
         error("scenario_tree.stage_probabilities must be a TOML table.")
     end
     probabilities_by_stage = _parse_stage_probabilities(raw_probs, branching_by_stage, num_windows)
+    raw_manual_events = get(scenario_tree_cfg, "manual_events", Dict{String,Any}())
+    manual_node_events = _parse_manual_events(raw_manual_events, formation_catalog)
 
     ovr_shock_sigma = Float64(get(stochastic_cfg, "ovr_shock_sigma", 0.0))
     value_shock_sigma = Float64(get(stochastic_cfg, "value_shock_sigma", 0.0))
@@ -139,7 +219,8 @@ function _parse_stochastic_config(
         ovr_shock_sigma = ovr_shock_sigma,
         value_shock_sigma = value_shock_sigma,
         chemistry_conflict_probability = chemistry_conflict_probability,
-        injury_probability = injury_probability
+        injury_probability = injury_probability,
+        manual_node_events = manual_node_events
     )
 
     tree = build_scenario_tree(
@@ -149,6 +230,11 @@ function _parse_stochastic_config(
         formation_catalog,
         formation_by_window
     )
+
+    invalid_manual_nodes = sort([n for n in keys(manual_node_events) if !haskey(tree.nodes, n)])
+    if !isempty(invalid_manual_nodes)
+        error("scenario_tree.manual_events references nodes that do not exist in the current tree: $(invalid_manual_nodes)")
+    end
 
     return stoch_config, tree
 end
@@ -308,6 +394,16 @@ function load_experiment_config(config_path::String=DEFAULT_EXPERIMENT_CONFIG_PA
         error("simulation.num_windows must be >= 1.")
     end
 
+    raw_top_k = get(sim_cfg, "top_k_players_per_position", 0)
+    if !(raw_top_k isa Integer)
+        error("simulation.top_k_players_per_position must be an integer (0 to disable).")
+    end
+    top_k_players_per_position = Int(raw_top_k)
+    if top_k_players_per_position < 0
+        error("simulation.top_k_players_per_position must be >= 0.")
+    end
+    top_k_players_per_position = top_k_players_per_position == 0 ? nothing : top_k_players_per_position
+
     initial_budget = Float64(get(opt_cfg, "initial_budget", 150e6))
     seasonal_revenue = Float64(get(opt_cfg, "seasonal_revenue", 50e6))
     initial_squad_strategy = String(get(opt_cfg, "initial_squad_strategy", "top_value"))
@@ -382,6 +478,7 @@ function load_experiment_config(config_path::String=DEFAULT_EXPERIMENT_CONFIG_PA
 
     println("🧪 Loaded experiment config: $config_path")
     println("   Windows: $num_windows")
+    println("   Top-K players per position: $(isnothing(top_k_players_per_position) ? "disabled" : top_k_players_per_position)")
     println("   Initial strategy: $initial_squad_strategy")
     println("   Tactical schemes: $(join(sort(collect(keys(formation_catalog))), ", "))")
     println("   Budget: €$(round(initial_budget/1e6, digits=1))M | Seasonal revenue: €$(round(seasonal_revenue/1e6, digits=1))M")
@@ -392,12 +489,14 @@ function load_experiment_config(config_path::String=DEFAULT_EXPERIMENT_CONFIG_PA
         println("   Stochastic mode: enabled")
         println("   Branching by stage: $(stochastic_config.branching_by_stage)")
         println("   Scenario nodes: $(length(scenario_tree.nodes)) | leaf nodes: $(length(scenario_tree.leaf_nodes))")
+        println("   Manual scenario events: $(length(stochastic_config.manual_node_events))")
     else
         println("   Stochastic mode: disabled")
     end
 
     return ExperimentConfig(
         num_windows,
+        top_k_players_per_position,
         initial_squad_strategy,
         model_params,
         stochastic_config,
@@ -425,13 +524,34 @@ end
 function run_pipeline(
     num_windows::Int;
     stochastic_config::Union{Nothing,StochasticConfig} = nothing,
-    scenario_tree::Union{Nothing,ScenarioTree} = nothing
+    scenario_tree::Union{Nothing,ScenarioTree} = nothing,
+    initial_squad_strategy::String = "top_value",
+    top_k_players_per_position::Union{Nothing, Int} = nothing
 )
     println("🚀 Starting PSR Squad Optimization Pipeline...")
     println("="^50)
 
     # STEP 1: Data Ingestion & Cleaning
     df = load_and_clean_data()
+
+    protected_player_ids = Int[]
+    if startswith(initial_squad_strategy, "team:")
+        team_name = replace(initial_squad_strategy, "team:" => "")
+        normalized_team_name = strip(lowercase(team_name))
+        team_mask = map(name -> !ismissing(name) && strip(lowercase(String(name))) == normalized_team_name, df.club_name)
+        protected_player_ids = Int.(df[team_mask, :player_id])
+    end
+
+    if !isnothing(top_k_players_per_position)
+        before_count = nrow(df)
+        df = filter_top_k_players_by_position(
+            df,
+            top_k_players_per_position;
+            protected_player_ids = protected_player_ids,
+        )
+        after_count = nrow(df)
+        println("🔎 Applied top-K filter by position (K=$(top_k_players_per_position)): $before_count -> $after_count players")
+    end
 
     # STEP 2: Projections (Deterministic Logic)
     ovr_map, value_map, growth_potential_map = generate_projections(df, num_windows)
@@ -795,7 +915,9 @@ function main()
     stochastic_bundle = run_pipeline(
         exp_cfg.num_windows,
         stochastic_config = exp_cfg.stochastic_config,
-        scenario_tree = exp_cfg.scenario_tree
+        scenario_tree = exp_cfg.scenario_tree,
+        initial_squad_strategy = exp_cfg.initial_squad_strategy,
+        top_k_players_per_position = exp_cfg.top_k_players_per_position,
     )
 
     # Check if optimization dependencies are available
