@@ -8,6 +8,54 @@ extract meaningful insights about squad decisions.
 
 using CSV, DataFrames, Statistics
 
+const DET_DECISIONS_PATH = "output/squad_decisions.csv"
+const DET_BUDGET_PATH = "output/budget_evolution.csv"
+const STOCH_DECISIONS_PATH = "output/squad_decisions_nodes.csv"
+const STOCH_BUDGET_PATH = "output/budget_evolution_nodes.csv"
+
+_files_exist(paths::Vector{String}) = all(isfile, paths)
+
+function _latest_mtime(paths::Vector{String}) # isso é a melhor forma de fazer isso?
+    return maximum((isfile(p) ? Float64(stat(p).mtime) : 0.0) for p in paths)
+end
+
+function _parse_analysis_mode(args::Vector{String})
+    if "--deterministic" in args
+        return :deterministic
+    elseif "--stochastic" in args
+        return :stochastic
+    else
+        return :auto
+    end
+end
+
+function _infer_analysis_mode(preferred::Symbol=:auto)
+    det_paths = [DET_DECISIONS_PATH, DET_BUDGET_PATH]
+    stoch_paths = [STOCH_DECISIONS_PATH, STOCH_BUDGET_PATH]
+
+    det_ready = _files_exist(det_paths)
+    stoch_ready = _files_exist(stoch_paths)
+
+    if preferred == :deterministic
+        det_ready || error("Deterministic files are missing. Run deterministic optimization first.")
+        return :deterministic
+    elseif preferred == :stochastic
+        stoch_ready || error("Stochastic files are missing. Run stochastic optimization first.")
+        return :stochastic
+    end
+
+    if det_ready && stoch_ready
+        # Auto mode: choose the most recent result set to avoid stale-file confusion.
+        return _latest_mtime(det_paths) >= _latest_mtime(stoch_paths) ? :deterministic : :stochastic
+    elseif det_ready
+        return :deterministic
+    elseif stoch_ready
+        return :stochastic
+    else
+        error("No result files found. Run optimization first.")
+    end
+end
+
 """
     analyze_squad_decisions(
         decisions_path::String="output/squad_decisions.csv",
@@ -233,6 +281,99 @@ function compare_windows(decisions_path::String, window1::Int, window2::Int)
     end
 end
 
+"""
+    analyze_stochastic_decisions(
+        decisions_path::String="output/squad_decisions_nodes.csv",
+        tree_path::String="output/tree_metadata.csv"
+    )
+
+Analyzes node-indexed stochastic decisions.
+"""
+function analyze_stochastic_decisions(
+    decisions_path::String="output/squad_decisions_nodes.csv",
+    tree_path::String="output/tree_metadata.csv"
+)
+    if !isfile(decisions_path)
+        error("Stochastic decisions file not found at $decisions_path. Run stochastic optimization first!")
+    end
+
+    df = CSV.read(decisions_path, DataFrame)
+    df_tree = isfile(tree_path) ? CSV.read(tree_path, DataFrame) : nothing
+
+    println("\n" * "="^70)
+    println("STOCHASTIC NODE-INDEXED RESULTS ANALYSIS")
+    println("="^70)
+
+    total_nodes = length(unique(df.node_id))
+    total_stages = maximum(df.stage)
+    total_players = length(unique(df.player_id))
+
+    println("\n📊 OVERVIEW")
+    println("   • Total nodes analyzed: $total_nodes")
+    println("   • Total stages analyzed: $(total_stages + 1)")
+    println("   • Total unique players involved: $total_players")
+
+    root_candidates = filter(r -> r.parent_id === missing, eachrow(df))
+    if !isempty(root_candidates)
+        root_node = first(root_candidates).node_id
+        root_df = filter(r -> r.node_id == root_node && r.in_squad == 1, df)
+        println("\n🎯 HERE-AND-NOW (ROOT NODE = $root_node)")
+        println("   • Players in squad: $(nrow(root_df))")
+        println("   • Average OVR: $(round(mean(root_df.ovr), digits=2))")
+    end
+
+    if !isnothing(df_tree)
+        leaf_mask = map(x -> Bool(x), coalesce.(df_tree.is_leaf, false))
+        leaf_nodes = df_tree[leaf_mask, :]
+        if nrow(leaf_nodes) > 0
+            prob_sum = sum(Float64.(leaf_nodes.cumulative_probability))
+            println("\n🌳 TREE SANITY")
+            println("   • Leaf nodes: $(nrow(leaf_nodes))")
+            println("   • Sum of leaf probabilities: $(round(prob_sum, digits=6))")
+        end
+    end
+
+    println("\n📌 CONTINGENCY SNAPSHOT")
+    sold_df = filter(r -> r.sold == 1, df)
+    bought_df = filter(r -> r.bought == 1, df)
+    println("   • Total sell actions across nodes: $(nrow(sold_df))")
+    println("   • Total buy actions across nodes: $(nrow(bought_df))")
+
+    return df
+end
+
+"""
+    analyze_stochastic_budget(budget_path::String="output/budget_evolution_nodes.csv")
+
+Analyzes node-indexed budget evolution and stage-wise expected cash.
+"""
+function analyze_stochastic_budget(budget_path::String="output/budget_evolution_nodes.csv")
+    if !isfile(budget_path)
+        error("Stochastic budget file not found at $budget_path. Run stochastic optimization first!")
+    end
+
+    df = CSV.read(budget_path, DataFrame)
+
+    println("\n" * "="^70)
+    println("STOCHASTIC BUDGET ANALYSIS")
+    println("="^70)
+
+    stages = sort(unique(df.stage))
+    for stage in stages
+        df_stage = filter(r -> r.stage == stage, df)
+        expected_cash = sum(df_stage.cash_balance .* df_stage.cumulative_probability)
+        worst_cash = minimum(df_stage.cash_balance)
+        best_cash = maximum(df_stage.cash_balance)
+
+        println("\n   Stage $stage")
+        println("   • Expected cash: €$(round(expected_cash/1e6, digits=2))M")
+        println("   • Worst-case cash: €$(round(worst_cash/1e6, digits=2))M")
+        println("   • Best-case cash: €$(round(best_cash/1e6, digits=2))M")
+    end
+
+    return df
+end
+
 # =============================================================================
 # QUICK START
 # =============================================================================
@@ -244,9 +385,17 @@ function quick_analysis()
     println("\n🔍 RUNNING COMPREHENSIVE ANALYSIS...")
 
     try
-        # Main analysis
-        analyze_squad_decisions()
-        analyze_budget_evolution()
+        mode = _infer_analysis_mode(_parse_analysis_mode(ARGS))
+
+        if mode == :stochastic
+            println("\nMode selected: stochastic")
+            analyze_stochastic_decisions()
+            analyze_stochastic_budget()
+        else
+            println("\nMode selected: deterministic")
+            analyze_squad_decisions()
+            analyze_budget_evolution()
+        end
 
         println("\n" * "="^70)
         println("✅ ANALYSIS COMPLETE!")
@@ -255,6 +404,10 @@ function quick_analysis()
         println("   • output/squad_decisions.csv    - Full decision matrix")
         println("   • output/budget_evolution.csv   - Financial tracking")
         println("   • output/formation_diagnostics.csv - Tactical diagnostics")
+        println("   • output/squad_decisions_nodes.csv - Node-indexed decision matrix")
+        println("   • output/budget_evolution_nodes.csv - Node-indexed financial tracking")
+        println("   • output/tree_metadata.csv - Scenario tree structure")
+        println("   • output/formation_diagnostics_nodes.csv - Node-indexed tactical diagnostics")
 
     catch e
         println("\n❌ Error during analysis: $e")
