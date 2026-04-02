@@ -23,6 +23,18 @@ salary_cap_multiplier_initial = 1.0 # qual a diferença entre o multiplier e o w
 salary_cap_window_factor = 1.0
 salary_cap_penalty = 500.0
 
+squad_position_penalty = 500.0 # Penalidade suave (menor que o salário)
+
+[bench_targets]
+GK = 2 # Dois goleiros reservas, logo 3 GKs no total no elenco
+CB = 2 # Dois zagueiros no banco
+RB = 1
+LB = 1
+CM = 3
+RW = 1
+LW = 1
+ST = 1
+
 [formation_catalog.433]
 # Exact starters by position for each tactical scheme
 GK = 1
@@ -56,6 +68,8 @@ window_3 = "442"
 weight_quality = 0.75
 weight_potential = 0.25
 decay_quimica = 0.5
+bonus_titular = 4.5
+bonus_elenco = 2.5
 peso_asset = 600.0 
 peso_performance = 2000.0 
 bonus_entrosamento = 100.0
@@ -113,5 +127,6 @@ market_shock = -0.15
 label = "Crise na Gávea"
 market_shock = -0.15
 chemistry_bonus = -1
+
 
 
