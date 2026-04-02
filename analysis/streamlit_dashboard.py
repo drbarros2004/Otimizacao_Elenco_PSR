@@ -193,18 +193,37 @@ def _sort_reserves_by_priority(reserves: pd.DataFrame) -> pd.DataFrame:
     return df.drop(columns=["pos_priority", "injury_sort"], errors="ignore")
 
 
+def _with_post_decision_squad(window_df: pd.DataFrame) -> pd.DataFrame:
+    df = window_df.copy()
+    for col in ["in_squad", "bought", "sold"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
+
+    # Display-only roster after node decisions: in_squad + bought - sold.
+    df["in_squad_display"] = (df["in_squad"] + df["bought"] - df["sold"]).clip(lower=0, upper=1).astype(int)
+    df["is_new_reinforcement"] = ((df["bought"] == 1) & (df["sold"] == 0)).astype(int)
+    return df
+
+
 def _with_display_best_xi(window_df: pd.DataFrame, form_window: pd.DataFrame) -> pd.DataFrame:
     """Build a display-only best XI by OVR, respecting positional requirements and availability."""
     df = window_df.copy()
     df["is_starter_display"] = 0
 
-    squad = df[df["in_squad"] == 1].copy()
+    squad_col = "in_squad_display" if "in_squad_display" in df.columns else "in_squad"
+    squad = df[df[squad_col] == 1].copy()
     if squad.empty:
         return df
 
+    starter_pool = squad.copy()
+    if "is_new_reinforcement" in starter_pool.columns:
+        starter_pool = starter_pool[starter_pool["is_new_reinforcement"] != 1].copy()
+
+    if starter_pool.empty:
+        return df
+
     if "starter_allowed" not in squad.columns:
-        squad["starter_allowed"] = 1
-    squad["starter_allowed"] = pd.to_numeric(squad["starter_allowed"], errors="coerce").fillna(1).astype(int)
+        starter_pool["starter_allowed"] = 1
+    starter_pool["starter_allowed"] = pd.to_numeric(starter_pool["starter_allowed"], errors="coerce").fillna(1).astype(int)
 
     req_map: dict[str, int] = {}
     if not form_window.empty and {"pos_group", "required_count"}.issubset(form_window.columns):
@@ -221,14 +240,14 @@ def _with_display_best_xi(window_df: pd.DataFrame, form_window: pd.DataFrame) ->
         }
 
     if not req_map:
-        req_series = squad.groupby("pos_group", as_index=True)["is_starter"].sum()
+        req_series = starter_pool.groupby("pos_group", as_index=True)["is_starter"].sum()
         req_map = {
             str(pos): int(cnt)
             for pos, cnt in req_series.items()
             if int(cnt) > 0
         }
 
-    target_total = int(sum(req_map.values())) if req_map else min(11, len(squad))
+    target_total = int(sum(req_map.values())) if req_map else min(11, len(starter_pool))
     selected_index: list[int] = []
 
     for pos in sorted(req_map.keys(), key=lambda p: POSITION_PRIORITY.get(p, 99)):
@@ -236,9 +255,9 @@ def _with_display_best_xi(window_df: pd.DataFrame, form_window: pd.DataFrame) ->
         if need <= 0:
             continue
 
-        pool = squad[(squad["pos_group"] == pos) & (squad["starter_allowed"] == 1)].copy()
+        pool = starter_pool[(starter_pool["pos_group"] == pos) & (starter_pool["starter_allowed"] == 1)].copy()
         if pool.empty:
-            pool = squad[squad["pos_group"] == pos].copy()
+            pool = starter_pool[starter_pool["pos_group"] == pos].copy()
 
         if not pool.empty:
             pool = pool.sort_values(by=["ovr"], ascending=False)
@@ -247,7 +266,7 @@ def _with_display_best_xi(window_df: pd.DataFrame, form_window: pd.DataFrame) ->
     selected_index = list(dict.fromkeys(selected_index))
 
     if len(selected_index) < target_total:
-        remaining = squad.loc[~squad.index.isin(selected_index)].copy()
+        remaining = starter_pool.loc[~starter_pool.index.isin(selected_index)].copy()
         remaining["pos_priority"] = remaining["pos_group"].map(POSITION_PRIORITY).fillna(99).astype(int)
 
         preferred = remaining[remaining["starter_allowed"] == 1].sort_values(
@@ -268,6 +287,8 @@ def _with_display_best_xi(window_df: pd.DataFrame, form_window: pd.DataFrame) ->
         selected_index = list(dict.fromkeys(selected_index))
 
     df.loc[df.index.isin(selected_index), "is_starter_display"] = 1
+    if "is_new_reinforcement" in df.columns:
+        df.loc[df["is_new_reinforcement"] == 1, "is_starter_display"] = 0
     return df
 
 
@@ -335,7 +356,10 @@ def load_data(preferred_mode: str = "auto") -> tuple[pd.DataFrame, pd.DataFrame,
         decisions["origin_league"] = ""
     decisions["origin_league"] = decisions["origin_league"].fillna("")
 
-    if is_stochastic and PLAYER_NODE_AUDIT_PATH.exists():
+    if "starter_allowed" in decisions.columns:
+        decisions["starter_allowed"] = pd.to_numeric(decisions["starter_allowed"], errors="coerce").fillna(1).astype(int)
+    elif is_stochastic and PLAYER_NODE_AUDIT_PATH.exists():
+        # Backward-compatibility path for legacy stochastic exports without starter_allowed.
         injury_df = pd.read_csv(PLAYER_NODE_AUDIT_PATH)
         required_cols = {"node_id", "player_id", "starter_allowed"}
         if required_cols.issubset(injury_df.columns):
@@ -364,7 +388,10 @@ def load_data(preferred_mode: str = "auto") -> tuple[pd.DataFrame, pd.DataFrame,
     else:
         decisions["starter_allowed"] = 1
 
-    decisions["injured"] = (decisions["starter_allowed"] == 0).astype(int)
+    if "injured" in decisions.columns:
+        decisions["injured"] = pd.to_numeric(decisions["injured"], errors="coerce").fillna(0).astype(int)
+    else:
+        decisions["injured"] = (decisions["starter_allowed"] == 0).astype(int)
 
     return decisions, budget, formation, tree_meta, is_stochastic, selected_mode
 
@@ -374,8 +401,20 @@ def _injury_badge(row: pd.Series) -> str:
     return "<b><span style='color:#D42424'>✚</span></b>" if injured else ""
 
 
+def _reinforcement_badge(row: pd.Series) -> str:
+    new_signing = int(row.get("is_new_reinforcement", 0)) == 1
+    return "<span title='Novo Reforço' style='color:#0E9F6E; font-size:1.2em;'> 🖋</span>" if new_signing else ""
+
 def enrich_with_evolution(decisions: pd.DataFrame, tree_meta: pd.DataFrame | None = None) -> pd.DataFrame:
     df = decisions.copy()
+
+    if "ovr_prev" in df.columns:
+        df["ovr_prev"] = pd.to_numeric(df["ovr_prev"], errors="coerce")
+        if "ovr_delta" in df.columns:
+            df["ovr_delta"] = pd.to_numeric(df["ovr_delta"], errors="coerce").fillna(0).astype(int)
+        elif "ovr" in df.columns:
+            df["ovr_delta"] = (df["ovr"] - df["ovr_prev"].fillna(df["ovr"])).astype(int)
+        return df
 
     is_stochastic = "node_id" in df.columns
     has_tree = tree_meta is not None and not tree_meta.empty and {"node_id", "parent_id"}.issubset(tree_meta.columns)
@@ -409,6 +448,16 @@ def summarize_window_finance(window_df: pd.DataFrame, budget_df: pd.DataFrame, w
     cash = float(row.iloc[0]["cash_balance"]) if not row.empty else 0.0
     deficit = float(row.iloc[0]["deficit"]) if not row.empty else 0.0
 
+    if not row.empty and {"transfer_spent", "transfer_sold", "buys_count", "sells_count"}.issubset(row.columns):
+        return {
+            "cash": cash,
+            "deficit": deficit,
+            "spent": float(row.iloc[0]["transfer_spent"]),
+            "sold": float(row.iloc[0]["transfer_sold"]),
+            "buys": int(row.iloc[0]["buys_count"]),
+            "sells": int(row.iloc[0]["sells_count"]),
+        }
+
     transfers = window_df[window_df["window"] == window]
     spent = float(transfers.loc[transfers["bought"] == 1, "acquisition_cost"].sum())
     sold = float(transfers.loc[transfers["sold"] == 1, "market_value"].sum())
@@ -426,7 +475,8 @@ def summarize_window_finance(window_df: pd.DataFrame, budget_df: pd.DataFrame, w
 
 
 def build_pitch_figure(window_df: pd.DataFrame, selected_window: int, formation_scheme: str | None = None) -> go.Figure:
-    squad = window_df[window_df["in_squad"] == 1].copy()
+    squad_col = "in_squad_display" if "in_squad_display" in window_df.columns else "in_squad"
+    squad = window_df[window_df[squad_col] == 1].copy()
     starter_col = "is_starter_display" if "is_starter_display" in squad.columns else "is_starter"
     starters = squad[squad[starter_col] == 1].copy()
     reserves = squad[squad[starter_col] == 0].copy()
@@ -481,14 +531,16 @@ def build_pitch_figure(window_df: pd.DataFrame, selected_window: int, formation_
         evo_txt = _evolution_text(ovr_now, ovr_prev)
         evo_badge = _evolution_badge(ovr_now, ovr_prev)
         injury_badge = _injury_badge(row)
+        reinforcement_badge = _reinforcement_badge(row)
         injury_status = "Injured" if int(row.get("injured", 0)) == 1 else "Available"
+        status_txt = "New Signing" if int(row.get("is_new_reinforcement", 0)) == 1 else injury_status
         reserve_name = _display_name(str(row["name"]), max_len=24)
 
         reserve_left_x.append(RESERVE_LEFT_TEXT_X)
         reserve_evo_x.append(RESERVE_EVO_X)
         reserve_ovr_x.append(RESERVE_OVR_X)
         reserve_y.append(start_y - idx * step_y)
-        reserve_left_text.append(f"<b>{row['pos_group']}</b>  {reserve_name} {injury_badge}".strip())
+        reserve_left_text.append(f"<b>{row['pos_group']}</b>  {reserve_name} {injury_badge} {reinforcement_badge}".strip())
         reserve_evo_text.append(evo_badge)
         reserve_ovr_text.append(f"<b>{ovr_now}</b>")
         reserve_hover.append(
@@ -496,7 +548,7 @@ def build_pitch_figure(window_df: pd.DataFrame, selected_window: int, formation_
                 [
                     f"<b>{row['name']}</b>",
                     f"Position: {row['pos_group']}",
-                    f"Status: {injury_status}",
+                    f"Status: {status_txt}",
                     f"OVR: {ovr_now} {evo_txt}".strip(),
                     _origin_text(row),
                     f"Market Value: {_money_millions(float(row['market_value']))}",
@@ -624,14 +676,20 @@ def build_pitch_figure(window_df: pd.DataFrame, selected_window: int, formation_
 
 
 def build_window_tables(window_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    squad = window_df[window_df["in_squad"] == 1].copy()
+    squad_col = "in_squad_display" if "in_squad_display" in window_df.columns else "in_squad"
+    squad = window_df[window_df[squad_col] == 1].copy()
     starter_col = "is_starter_display" if "is_starter_display" in squad.columns else "is_starter"
     starters = squad[squad[starter_col] == 1].copy()
     reserves = squad[squad[starter_col] == 0].copy()
 
     for df in [starters, reserves]:
+        if "ovr_prev" not in df.columns:
+            df["ovr_prev"] = df["ovr"]
         df["ovr_prev"] = df["ovr_prev"].fillna(df["ovr"])
-        df["ovr_delta"] = (df["ovr"] - df["ovr_prev"]).astype(int)
+        if "ovr_delta" not in df.columns:
+            df["ovr_delta"] = (df["ovr"] - df["ovr_prev"]).astype(int)
+        else:
+            df["ovr_delta"] = pd.to_numeric(df["ovr_delta"], errors="coerce").fillna(0).astype(int)
 
     starters = starters.sort_values(by=["pos_group", "ovr"], ascending=[True, False])
     reserves = _sort_reserves_by_priority(reserves)
@@ -1140,6 +1198,8 @@ def main() -> None:
     if selected_node is not None and "node_id" in form_window.columns:
         form_window = form_window[form_window["node_id"] == selected_node].copy()
 
+    # Display the roster after node decisions, and then pick a display-only strongest XI.
+    window_df = _with_post_decision_squad(window_df)
     window_df = _with_display_best_xi(window_df, form_window)
 
     scheme = window_df["formation_scheme"].dropna().iloc[0] if "formation_scheme" in window_df and not window_df["formation_scheme"].dropna().empty else "N/A"
