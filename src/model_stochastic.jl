@@ -175,6 +175,22 @@ function build_stochastic_squad_optimization_model(
         end
     end
 
+    # ==== SQUAD DEPTH BY POSITION (SOFT UPPER BOUNDS) ====
+    verbose && println("  ├─ Squad depth constraints by node (soft)...")
+
+    for n in N
+        for pos in formation_positions
+            required_starters = get(data.position_requirements_map, (pos, n), 0)
+            allowed_bench = get(params.bench_targets, pos, 0)
+            max_allowed = required_starters + allowed_bench
+            players_in_pos = [j for j in J if pos_groups[j] == pos]
+
+            @constraint(model,
+                sum(x[j,n] for j in players_in_pos) <= max_allowed + slack_posicao[pos,n]
+            )
+        end
+    end
+
     # ==== STARTER ELIGIBILITY + INJURY SANDBOX ====
     verbose && println("  ├─ Starter and sell availability constraints...")
 
@@ -219,20 +235,11 @@ function build_stochastic_squad_optimization_model(
             error("Node $n has no parent and is not root node $(root_id).")
         end
         p = parent::Int
-        M = S_MAX
 
         @constraint(model,
-            Quimica[(i,j), n] <= Quimica[(i,j), p] + BONUS_INCREMENTO + M * (1 - ParElenco[(i,j), n])
-        )
-        @constraint(model,
-            Quimica[(i,j), n] >= Quimica[(i,j), p] + BONUS_INCREMENTO - M * (1 - ParElenco[(i,j), n])
-        )
-
-        @constraint(model,
-            Quimica[(i,j), n] <= params.decay_quimica * Quimica[(i,j), p] + M * ParElenco[(i,j), n]
-        )
-        @constraint(model,
-            Quimica[(i,j), n] >= params.decay_quimica * Quimica[(i,j), p] - M * ParElenco[(i,j), n]
+            Quimica[(i,j), n] <= params.decay_quimica * Quimica[(i,j), p] 
+                                + params.bonus_titular * ParTitular[(i,j), n] 
+                                + params.bonus_elenco * (ParElenco[(i,j), n] - ParTitular[(i,j), n])
         )
     end
 
@@ -260,6 +267,10 @@ function build_stochastic_squad_optimization_model(
             add_to_expression!(obj_terms, prob_n * params.peso_performance * score_tatico * y[j,n])
 
             add_to_expression!(obj_terms, -prob_n * params.friction_penalty * buy[j,n])
+        end
+
+        for p in formation_positions
+            add_to_expression!(obj_terms, -prob_n * params.squad_position_penalty * slack_posicao[p,n])
         end
 
         add_to_expression!(obj_terms, -prob_n * params.salary_cap_penalty * slack_salario[n])

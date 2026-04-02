@@ -373,6 +373,56 @@ function _parse_tactical_strategy(cfg::Dict{String,Any}, num_windows::Int)
 end
 
 """
+    _parse_bench_targets(cfg::Dict{String,Any}, formation_catalog::Dict{String, Dict{String, Int}})
+
+Parses optional bench targets by position.
+If omitted, defaults to zero extra bench slots for every tactical position.
+"""
+function _parse_bench_targets(
+    cfg::Dict{String,Any},
+    formation_catalog::Dict{String, Dict{String, Int}}
+)
+    bench_cfg = get(cfg, "bench_targets", Dict{String,Any}())
+    if !(bench_cfg isa AbstractDict)
+        error("[bench_targets] must be a TOML table.")
+    end
+
+    valid_positions = Set{String}()
+    for limits in values(formation_catalog)
+        for pos in keys(limits)
+            push!(valid_positions, pos)
+        end
+    end
+
+    bench_targets = Dict{String, Int}(pos => 0 for pos in valid_positions)
+
+    for (raw_pos, raw_count) in bench_cfg
+        pos = strip(String(raw_pos))
+        if isempty(pos)
+            error("[bench_targets] contains an empty position key.")
+        end
+
+        if !(raw_count isa Integer)
+            error("[bench_targets].$pos must be an integer.")
+        end
+
+        if !in(pos, valid_positions)
+            known_positions = sort(collect(valid_positions))
+            error("[bench_targets].$pos is not used in formation_catalog. Known positions: $(known_positions)")
+        end
+
+        count = Int(raw_count)
+        if count < 0
+            error("[bench_targets].$pos must be >= 0.")
+        end
+
+        bench_targets[pos] = count
+    end
+
+    return bench_targets
+end
+
+"""
     load_experiment_config(config_path::String=DEFAULT_EXPERIMENT_CONFIG_PATH)
 
 Loads experiment settings from TOML and validates key constraints.
@@ -417,6 +467,7 @@ function load_experiment_config(config_path::String=DEFAULT_EXPERIMENT_CONFIG_PA
     salary_cap_multiplier_initial = Float64(get(constraints_cfg, "salary_cap_multiplier_initial", 1.2))
     salary_cap_window_factor = Float64(get(constraints_cfg, "salary_cap_window_factor", 1.0))
     salary_cap_penalty = Float64(get(constraints_cfg, "salary_cap_penalty", P_SALARIO))
+    squad_position_penalty = Float64(get(constraints_cfg, "squad_position_penalty", 0.0))
     if min_squad_size > max_squad_size
         error("constraints.min_squad_size cannot be greater than constraints.max_squad_size.")
     end
@@ -435,15 +486,21 @@ function load_experiment_config(config_path::String=DEFAULT_EXPERIMENT_CONFIG_PA
     if salary_cap_penalty <= 0
         error("constraints.salary_cap_penalty must be > 0.")
     end
+    if squad_position_penalty < 0
+        error("constraints.squad_position_penalty must be >= 0.")
+    end
 
     formation_catalog, formation_by_window = _parse_tactical_strategy(cfg, num_windows)
+    bench_targets = _parse_bench_targets(cfg, formation_catalog)
 
     weight_quality = Float64(get(objective_cfg, "weight_quality", 0.80))
     weight_potential = Float64(get(objective_cfg, "weight_potential", 0.15))
     decay_quimica = Float64(get(objective_cfg, "decay_quimica", 0.70))
+    bonus_titular = Float64(get(objective_cfg, "bonus_titular", 4.0)) # Aumentamos devido ao baixo peso base
+    bonus_elenco = Float64(get(objective_cfg, "bonus_elenco", 2.5))   # Aumentamos devido ao baixo peso base
     peso_asset = Float64(get(objective_cfg, "peso_asset", 0.2))
     peso_performance = Float64(get(objective_cfg, "peso_performance", 1.0))
-    bonus_entrosamento = Float64(get(objective_cfg, "bonus_entrosamento", 2.0))
+    bonus_entrosamento = Float64(get(objective_cfg, "bonus_entrosamento", 5.0)) # Dobramos o peso no objetivo global
     risk_appetite = Float64(get(objective_cfg, "risk_appetite", 1.0))
 
     model_params = ModelParameters(
@@ -460,9 +517,13 @@ function load_experiment_config(config_path::String=DEFAULT_EXPERIMENT_CONFIG_PA
         salary_cap_penalty = salary_cap_penalty,
         formation_catalog = formation_catalog,
         formation_by_window = formation_by_window,
+        bench_targets = bench_targets,
+        squad_position_penalty = squad_position_penalty,
         weight_quality = weight_quality,
         weight_potential = weight_potential,
         decay_quimica = decay_quimica,
+        bonus_titular = bonus_titular,
+        bonus_elenco = bonus_elenco,
         peso_asset = peso_asset,
         peso_performance = peso_performance,
         bonus_entrosamento = bonus_entrosamento,
@@ -484,6 +545,7 @@ function load_experiment_config(config_path::String=DEFAULT_EXPERIMENT_CONFIG_PA
     println("   Budget: €$(round(initial_budget/1e6, digits=1))M | Seasonal revenue: €$(round(seasonal_revenue/1e6, digits=1))M")
     println("   Salary cap multiplier (initial payroll): x$(round(salary_cap_multiplier_initial, digits=2))")
     println("   Salary cap window factor: $(round(salary_cap_window_factor, digits=2)) | penalty: $(round(salary_cap_penalty, digits=1))")
+    println("   Squad position penalty: $(round(squad_position_penalty, digits=1)) | Bench targets: $(bench_targets)")
 
     if stochastic_config.enabled && !isnothing(scenario_tree)
         println("   Stochastic mode: enabled")

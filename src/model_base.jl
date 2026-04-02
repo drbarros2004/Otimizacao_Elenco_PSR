@@ -15,9 +15,8 @@ using JuMP, Gurobi, DataFrames, CSV
 # Declaring constants
 const S_MAX = 10.0         
 const S_INICIAL = 5.0      
-const BONUS_INCREMENTO = 0.5  
 
-const BIG_M = 1000.0
+const BIG_M = 1000.0 # para que serve isso?
 
 const P_POSICAO = 1e6
 const P_SALARIO = 500.0
@@ -75,6 +74,8 @@ struct ModelParameters
     salary_cap_penalty::Float64
     formation_catalog::Dict{String, Dict{String, Int}}
     formation_by_window::Dict{Int, String}
+    bench_targets::Dict{String, Int}
+    squad_position_penalty::Float64
     weight_quality::Float64
     weight_potential::Float64
     decay_quimica::Float64
@@ -82,6 +83,8 @@ struct ModelParameters
     peso_performance::Float64
     bonus_entrosamento::Float64
     risk_appetite::Float64
+    bonus_titular::Float64
+    bonus_elenco::Float64
 
     function ModelParameters(;
         initial_budget::Float64 = 100e6,
@@ -108,20 +111,25 @@ struct ModelParameters
             )
         ),
         formation_by_window::Dict{Int, String} = Dict(0 => "default"),
+        bench_targets::Dict{String, Int} = Dict{String, Int}(),
+        squad_position_penalty::Float64 = 0.0,
         weight_quality::Float64 = 0.80,
         weight_potential::Float64 = 0.15,
         decay_quimica::Float64 = 0.70,
         peso_asset::Float64 = 0.2,
         peso_performance::Float64 = 1.0,
         bonus_entrosamento::Float64 = 2.0,
-        risk_appetite::Float64 = 1.0
+        risk_appetite::Float64 = 1.0,
+        bonus_titular::Float64 = 3.0,
+        bonus_elenco::Float64 = 2.0
     )
         new(initial_budget, seasonal_revenue, max_squad_size, min_squad_size,
             friction_penalty, transaction_cost_buy, transaction_cost_sell, signing_bonus_rate,
             salary_cap_multiplier_initial, salary_cap_window_factor, salary_cap_penalty,
-            formation_catalog, formation_by_window,
+            formation_catalog, formation_by_window, bench_targets, squad_position_penalty,
             weight_quality, weight_potential, decay_quimica,
-            peso_asset, peso_performance, bonus_entrosamento, risk_appetite)
+            peso_asset, peso_performance, bonus_entrosamento, risk_appetite,
+            bonus_titular, bonus_elenco)
     end
 end
 

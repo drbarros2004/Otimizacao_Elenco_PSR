@@ -42,7 +42,8 @@ function build_squad_optimization_model(data::ModelData, params::ModelParameters
     @variable(model, ParTitular[(i,j) in pairs, t in T], Bin)
     @variable(model, 0 <= Quimica[(i,j) in pairs, t in T] <= S_MAX)
 
-    # Soft constraint slacks
+    # Soft constraint slacks (model is penalized if there are not the recommended number of players in
+    # each position or if )
     @variable(model, slack_posicao[p in formation_positions, t in T] >= 0)
     @variable(model, slack_salario[t in T] >= 0)
 
@@ -163,6 +164,24 @@ function build_squad_optimization_model(data::ModelData, params::ModelParameters
         end
     end
 
+    # ==== SQUAD DEPTH BY POSITION (SOFT UPPER BOUNDS) ====
+    verbose && println("  ├─ Squad depth constraints by position (soft)...")
+
+    for t in T
+        _, formation_t = get_window_formation(params, t)
+
+        for pos in formation_positions
+            required_starters = get(formation_t, pos, 0)
+            allowed_bench = get(params.bench_targets, pos, 0)
+            max_allowed = required_starters + allowed_bench
+            players_in_pos = [j for j in J if pos_groups[j] == pos]
+
+            @constraint(model,
+                sum(x[j,t] for j in players_in_pos) <= max_allowed + slack_posicao[pos,t]
+            )
+        end
+    end
+
     # ==== STARTER ELIGIBILITY ====
     verbose && println("  ├─ Starter eligibility...")
 
@@ -197,22 +216,10 @@ function build_squad_optimization_model(data::ModelData, params::ModelParameters
 
     for (i, j) in pairs, t in T
         if t > first(T)
-            M = S_MAX
-
-            # Case 1: Together → chemistry grows
             @constraint(model,
-                Quimica[(i,j), t] <= Quimica[(i,j), t-1] + BONUS_INCREMENTO + M * (1 - ParElenco[(i,j), t])
-            )
-            @constraint(model,
-                Quimica[(i,j), t] >= Quimica[(i,j), t-1] + BONUS_INCREMENTO - M * (1 - ParElenco[(i,j), t])
-            )
-
-            # Case 2: Separated → chemistry decays
-            @constraint(model,
-                Quimica[(i,j), t] <= params.decay_quimica * Quimica[(i,j), t-1] + M * ParElenco[(i,j), t]
-            )
-            @constraint(model,
-                Quimica[(i,j), t] >= params.decay_quimica * Quimica[(i,j), t-1] - M * ParElenco[(i,j), t]
+                Quimica[(i,j), t] <= params.decay_quimica * Quimica[(i,j), t-1] 
+                                    + params.bonus_titular * ParTitular[(i,j), t] 
+                                    + params.bonus_elenco * (ParElenco[(i,j), t] - ParTitular[(i,j), t])
             )
         end
     end
@@ -257,6 +264,11 @@ function build_squad_optimization_model(data::ModelData, params::ModelParameters
 
     # 5. Soft constraint penalties
     for t in T
+        if t > first(T)
+            for p in formation_positions
+                add_to_expression!(obj_terms, -params.squad_position_penalty * slack_posicao[p,t])
+            end
+        end
         add_to_expression!(obj_terms, -params.salary_cap_penalty * slack_salario[t])
         add_to_expression!(obj_terms, -P_CAIXA * budget_deficit[t])
     end
