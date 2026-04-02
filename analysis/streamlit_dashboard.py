@@ -14,6 +14,7 @@ BUDGET_EVOLUTION_NODES_PATH = OUTPUT_DIR / "budget_evolution_nodes.csv"
 FORMATION_DIAGNOSTICS_NODES_PATH = OUTPUT_DIR / "formation_diagnostics_nodes.csv"
 TREE_METADATA_PATH = OUTPUT_DIR / "tree_metadata.csv"
 PLAYER_NODE_AUDIT_PATH = ROOT / "data" / "processed" / "player_node_audit.csv"
+PROCESSED_PLAYER_DATA_PATH = ROOT / "data" / "processed" / "processed_player_data.csv"
 DET_RESULT_PATHS = [SQUAD_DECISIONS_PATH, BUDGET_EVOLUTION_PATH]
 STOCH_RESULT_PATHS = [SQUAD_DECISIONS_NODES_PATH, BUDGET_EVOLUTION_NODES_PATH]
 
@@ -822,6 +823,25 @@ def _get_sibling_node_ids(tree_meta: pd.DataFrame, selected_node: int) -> list[i
     return sorted(set(siblings))
 
 
+def _build_sibling_choices(tree_meta: pd.DataFrame, sibling_ids: list[int]) -> tuple[pd.DataFrame, list[str], list[int], dict[str, int]]:
+    if tree_meta.empty or not sibling_ids:
+        return pd.DataFrame(), [], [], {}
+
+    siblings = tree_meta[tree_meta["node_id"].isin(sibling_ids)].copy()
+    if siblings.empty:
+        return pd.DataFrame(), [], [], {}
+
+    if "cumulative_probability" in siblings.columns:
+        siblings = siblings.sort_values(by=["cumulative_probability", "node_id"], ascending=[False, True])
+    else:
+        siblings = siblings.sort_values(by=["node_id"], ascending=[True])
+
+    sibling_option_ids = siblings["node_id"].astype(int).tolist()
+    sibling_options = [_build_node_label(row) for _, row in siblings.iterrows()]
+    sibling_map = dict(zip(sibling_options, sibling_option_ids))
+    return siblings, sibling_options, sibling_option_ids, sibling_map
+
+
 def _extract_clicked_node(chart_state, valid_nodes: set[int] | None = None) -> int | None:
     if chart_state is None:
         return None
@@ -1080,6 +1100,263 @@ def _style_sibling_diff(df: pd.DataFrame):
     return df.style.apply(style_row, axis=1)
 
 
+def _starter_slice(window_df: pd.DataFrame) -> pd.DataFrame:
+    if window_df is None or window_df.empty:
+        return pd.DataFrame()
+
+    squad_col = "in_squad_display" if "in_squad_display" in window_df.columns else "in_squad"
+    starter_col = "is_starter_display" if "is_starter_display" in window_df.columns else "is_starter"
+    squad = window_df[window_df[squad_col] == 1].copy()
+    return squad[squad[starter_col] == 1].copy()
+
+
+@st.cache_data(show_spinner=False)
+def _load_player_age_lookup() -> pd.DataFrame:
+    if not PROCESSED_PLAYER_DATA_PATH.exists():
+        return pd.DataFrame(columns=["player_id", "age"])
+
+    age_df = pd.read_csv(PROCESSED_PLAYER_DATA_PATH, usecols=["player_id", "age"])
+    age_df["player_id"] = pd.to_numeric(age_df["player_id"], errors="coerce")
+    age_df["age"] = pd.to_numeric(age_df["age"], errors="coerce")
+    age_df = age_df.dropna(subset=["player_id"]).copy()
+    age_df["player_id"] = age_df["player_id"].astype(int)
+    return age_df.drop_duplicates(subset=["player_id"], keep="last")
+
+
+def _ensure_age_column(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    if "player_id" not in out.columns:
+        out["age"] = pd.NA
+        return out
+
+    out["player_id"] = pd.to_numeric(out["player_id"], errors="coerce")
+    out = out.dropna(subset=["player_id"]).copy()
+    out["player_id"] = out["player_id"].astype(int)
+
+    age_lookup = _load_player_age_lookup()
+    if age_lookup.empty:
+        if "age" in out.columns:
+            out["age"] = pd.to_numeric(out["age"], errors="coerce")
+        else:
+            out["age"] = pd.NA
+        return out
+
+    if "age" not in out.columns:
+        out = out.merge(age_lookup, on="player_id", how="left")
+        out["age"] = pd.to_numeric(out["age"], errors="coerce")
+        return out
+
+    out["age"] = pd.to_numeric(out["age"], errors="coerce")
+    if out["age"].isna().any():
+        out = out.merge(age_lookup, on="player_id", how="left", suffixes=("", "_lookup"))
+        out["age"] = out["age"].fillna(out["age_lookup"])
+        out = out.drop(columns=["age_lookup"], errors="ignore")
+
+    return out
+
+
+def _compute_squad_profile_metrics(window_df: pd.DataFrame) -> dict[str, float]:
+    starters = _starter_slice(window_df)
+    if starters.empty:
+        return {
+            "Média de OVR": 0.0,
+            "Potencial de Revenda": 0.0,
+            "Idade Média": float("nan"),
+            "Entrosamento Total": 0.0,
+            "Custo Salarial": 0.0,
+        }
+
+    starters = _ensure_age_column(starters)
+    starters["ovr"] = pd.to_numeric(starters.get("ovr", 0), errors="coerce").fillna(0)
+    starters["market_value"] = pd.to_numeric(starters.get("market_value", 0), errors="coerce").fillna(0.0)
+    starters["wage"] = pd.to_numeric(starters.get("wage", 0), errors="coerce").fillna(0.0)
+    starters["in_squad"] = pd.to_numeric(starters.get("in_squad", 0), errors="coerce").fillna(0).astype(int)
+    starters["age"] = pd.to_numeric(starters.get("age", pd.Series(dtype=float)), errors="coerce")
+
+    age_mean = float(starters["age"].mean()) if starters["age"].notna().any() else float("nan")
+    chemistry_total = float(starters["in_squad"].sum())
+
+    return {
+        "Média de OVR": float(starters["ovr"].mean()),
+        "Potencial de Revenda": float(starters["market_value"].sum()),
+        "Idade Média": age_mean,
+        "Entrosamento Total": chemistry_total,
+        "Custo Salarial": float(starters["wage"].sum()),
+    }
+
+
+def _format_profile_metric(metric: str, value: float) -> str:
+    if pd.isna(value):
+        return "N/A"
+    if metric in {"Média de OVR", "Idade Média"}:
+        return f"{value:.1f}"
+    if metric in {"Potencial de Revenda", "Custo Salarial"}:
+        return _money_millions(float(value))
+    if metric == "Entrosamento Total":
+        return f"{int(round(value))}"
+    return f"{value:.2f}"
+
+
+def _compute_profile_scale_bounds(
+    decisions: pd.DataFrame,
+    formation: pd.DataFrame,
+    window: int,
+    node_ids: list[int],
+) -> dict[str, tuple[float, float]]:
+    metrics_bucket: dict[str, list[float]] = {
+        "Média de OVR": [],
+        "Potencial de Revenda": [],
+        "Idade Média": [],
+        "Entrosamento Total": [],
+        "Custo Salarial": [],
+    }
+
+    for node_id in sorted(set(int(n) for n in node_ids)):
+        node_df = decisions[
+            (decisions["window"] == window)
+            & (decisions["node_id"] == node_id)
+        ].copy()
+        if node_df.empty:
+            continue
+
+        node_form = formation[formation["window"] == window].copy()
+        if "node_id" in node_form.columns:
+            node_form = node_form[node_form["node_id"] == node_id].copy()
+
+        node_df = _with_post_decision_squad(node_df)
+        node_df = _with_display_best_xi(node_df, node_form)
+        node_metrics = _compute_squad_profile_metrics(node_df)
+
+        for metric, value in node_metrics.items():
+            if not pd.isna(value):
+                metrics_bucket[metric].append(float(value))
+
+    bounds: dict[str, tuple[float, float]] = {}
+    for metric, values in metrics_bucket.items():
+        if not values:
+            continue
+        bounds[metric] = (min(values), max(values))
+
+    return bounds
+
+
+def build_squad_profile_radar(
+    selected_df: pd.DataFrame,
+    sibling_df: pd.DataFrame,
+    selected_node: int,
+    sibling_node: int,
+    chart_height: int = 300,
+    scale_bounds: dict[str, tuple[float, float]] | None = None,
+) -> tuple[go.Figure, pd.DataFrame]:
+    categories = [
+        "Média de OVR",
+        "Potencial de Revenda",
+        "Idade Média",
+        "Entrosamento Total",
+        "Custo Salarial",
+    ]
+
+    selected_metrics = _compute_squad_profile_metrics(selected_df)
+    sibling_metrics = _compute_squad_profile_metrics(sibling_df)
+
+    selected_raw = [selected_metrics[k] for k in categories]
+    sibling_raw = [sibling_metrics[k] for k in categories]
+
+    min_visible_radius = 12.0
+    selected_norm: list[float] = []
+    sibling_norm: list[float] = []
+    for metric, sel_v, sib_v in zip(categories, selected_raw, sibling_raw):
+        metric_bounds = scale_bounds.get(metric) if scale_bounds else None
+        if metric_bounds is not None:
+            lo, hi = float(metric_bounds[0]), float(metric_bounds[1])
+        else:
+            lo = min(float(sel_v), float(sib_v)) if not (pd.isna(sel_v) or pd.isna(sib_v)) else 0.0
+            hi = max(float(sel_v), float(sib_v)) if not (pd.isna(sel_v) or pd.isna(sib_v)) else 0.0
+
+        if pd.isna(sel_v) and pd.isna(sib_v):
+            selected_norm.append(0.0)
+            sibling_norm.append(0.0)
+            continue
+        if pd.isna(sel_v):
+            selected_norm.append(0.0)
+            sibling_norm.append(100.0)
+            continue
+        if pd.isna(sib_v):
+            selected_norm.append(100.0)
+            sibling_norm.append(0.0)
+            continue
+
+        if hi == lo:
+            selected_norm.append(50.0)
+            sibling_norm.append(50.0)
+            continue
+
+        sel_scaled = 100.0 * (float(sel_v) - lo) / (hi - lo)
+        sib_scaled = 100.0 * (float(sib_v) - lo) / (hi - lo)
+        sel_scaled = max(0.0, min(100.0, sel_scaled))
+        sib_scaled = max(0.0, min(100.0, sib_scaled))
+
+        # Keep the lower profile visible as an actual polygon, not a center-collapsed line.
+        selected_norm.append(min_visible_radius + ((100.0 - min_visible_radius) * sel_scaled / 100.0))
+        sibling_norm.append(min_visible_radius + ((100.0 - min_visible_radius) * sib_scaled / 100.0))
+
+    theta = categories + [categories[0]]
+    sel_r = selected_norm + [selected_norm[0]]
+    sib_r = sibling_norm + [sibling_norm[0]]
+    sel_raw_fmt = [_format_profile_metric(m, v) for m, v in zip(categories, selected_raw)]
+    sib_raw_fmt = [_format_profile_metric(m, v) for m, v in zip(categories, sibling_raw)]
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatterpolar(
+            r=sel_r,
+            theta=theta,
+            fill="toself",
+            name=f"Nó {selected_node}",
+            line=dict(color="#F39C12", width=2),
+            fillcolor="rgba(243, 156, 18, 0.25)",
+            customdata=sel_raw_fmt + [sel_raw_fmt[0]],
+            hovertemplate=f"%{{theta}}<br>Nó {selected_node}: %{{customdata}}<extra></extra>",
+        )
+    )
+    fig.add_trace(
+        go.Scatterpolar(
+            r=sib_r,
+            theta=theta,
+            fill="toself",
+            name=f"Nó {sibling_node}",
+            line=dict(color="#2AA198", width=2),
+            fillcolor="rgba(42, 161, 152, 0.25)",
+            customdata=sib_raw_fmt + [sib_raw_fmt[0]],
+            hovertemplate=f"%{{theta}}<br>Nó {sibling_node}: %{{customdata}}<extra></extra>",
+        )
+    )
+
+    fig.update_layout(
+        title=f"Perfil do Elenco Titular: Nó {selected_node} vs Nó {sibling_node}",
+        height=max(260, chart_height),
+        margin=dict(l=12, r=12, t=50, b=12),
+        paper_bgcolor="#111821",
+        plot_bgcolor="#111821",
+        font=dict(color="white"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.03, xanchor="right", x=1.0),
+        polar=dict(
+            bgcolor="#111821",
+            radialaxis=dict(visible=True, range=[0, 100], showticklabels=False, ticks="", gridcolor="#3D4A5A"),
+            angularaxis=dict(gridcolor="#2E3948"),
+        ),
+    )
+
+    metrics_table = pd.DataFrame(
+        {
+            "Métrica": categories,
+            f"Nó {selected_node}": sel_raw_fmt,
+            f"Nó {sibling_node}": sib_raw_fmt,
+        }
+    )
+    return fig, metrics_table
+
+
 def main() -> None:
     st.set_page_config(page_title="Squad Field Dashboard", page_icon="⚽", layout="wide")
 
@@ -1204,6 +1481,7 @@ def main() -> None:
 
     scheme = window_df["formation_scheme"].dropna().iloc[0] if "formation_scheme" in window_df and not window_df["formation_scheme"].dropna().empty else "N/A"
     finance = summarize_window_finance(window_df, budget, selected_window, selected_node)
+    selected_sibling_node: int | None = None
 
     show_tree_sidebar = (
         is_stochastic
@@ -1253,12 +1531,65 @@ def main() -> None:
             except TypeError:
                 st.plotly_chart(tree_fig, width="stretch")
 
-            st.subheader("Comparativo")
-            st.caption("Espaço reservado para gráfico de finanças/OVR entre cenários (em breve).")
-            st.markdown(
-                f"<div style='height: {lower_panel_height}px; border: 1px dashed #5D6D7E; border-radius: 8px; background: #111821;'></div>",
-                unsafe_allow_html=True,
-            )
+            # st.subheader("Comparativo")
+            # st.caption("Radar do perfil agregado do time titular: nó atual vs nó irmão.")
+
+            sibling_ids = _get_sibling_node_ids(prepared_tree_meta, selected_node)
+            if sibling_ids:
+                siblings, sibling_options, sibling_option_ids, sibling_map = _build_sibling_choices(prepared_tree_meta, sibling_ids)
+
+                sibling_state_key = f"selected_sibling_stage_{selected_window}_node_{selected_node}"
+                if sibling_state_key not in st.session_state or int(st.session_state[sibling_state_key]) not in sibling_option_ids:
+                    st.session_state[sibling_state_key] = sibling_option_ids[0]
+
+                active_sibling = int(st.session_state[sibling_state_key])
+                selected_sibling_index = max(0, sibling_option_ids.index(active_sibling))
+                selected_sibling_label = st.selectbox(
+                    "Nó Irmão",
+                    options=sibling_options,
+                    index=selected_sibling_index,
+                    key=f"sibling_compare_box_{selected_window}_{selected_node}",
+                )
+                selected_sibling_node = int(sibling_map[selected_sibling_label])
+                st.session_state[sibling_state_key] = selected_sibling_node
+
+                sibling_df = decisions[
+                    (decisions["window"] == selected_window)
+                    & (decisions["node_id"] == selected_sibling_node)
+                ].copy()
+                sibling_form = formation[formation["window"] == selected_window].copy()
+                if "node_id" in sibling_form.columns:
+                    sibling_form = sibling_form[sibling_form["node_id"] == selected_sibling_node].copy()
+
+                sibling_df = _with_post_decision_squad(sibling_df)
+                sibling_df = _with_display_best_xi(sibling_df, sibling_form)
+
+                scale_node_ids = (
+                    stage_meta["node_id"].dropna().astype(int).tolist()
+                    if not stage_meta.empty and "node_id" in stage_meta.columns
+                    else [selected_node] + sibling_ids
+                )
+                scale_bounds = _compute_profile_scale_bounds(
+                    decisions,
+                    formation,
+                    selected_window,
+                    scale_node_ids,
+                )
+
+                radar_height = max(240, min(380, lower_panel_height - 120))
+                radar_fig, radar_tbl = build_squad_profile_radar(
+                    window_df,
+                    sibling_df,
+                    selected_node,
+                    selected_sibling_node,
+                    chart_height=radar_height,
+                    scale_bounds=scale_bounds,
+                )
+                st.plotly_chart(radar_fig, width="stretch")
+                st.caption("Escala normalizada de 0 a 100 por métrica para destacar trade-offs; valores absolutos na tabela abaixo.")
+                st.dataframe(radar_tbl, width="stretch", hide_index=True)
+            else:
+                st.info("Não há nó irmão disponível para comparação neste estágio.")
     else:
         pitch_fig = build_pitch_figure(window_df, selected_window, scheme)
         st.plotly_chart(pitch_fig, width="stretch")
@@ -1302,16 +1633,20 @@ def main() -> None:
                 sibling_ids = _get_sibling_node_ids(prepared_tree_meta, selected_node)
 
                 if sibling_ids:
-                    siblings = prepared_tree_meta[prepared_tree_meta["node_id"].isin(sibling_ids)].copy()
-                    sibling_options = [_build_node_label(row) for _, row in siblings.iterrows()]
-                    sibling_map = dict(zip(sibling_options, siblings["node_id"].astype(int).tolist()))
+                    siblings, sibling_options, sibling_option_ids, sibling_map = _build_sibling_choices(prepared_tree_meta, sibling_ids)
                     st.subheader("Sibling Differences (Contingency Planning)")
-                    selected_sibling_label = st.selectbox(
-                        "Compare selected node against sibling",
-                        options=sibling_options,
-                        index=0,
-                    )
-                    sibling_node = int(sibling_map[selected_sibling_label])
+                    if selected_sibling_node is None:
+                        selected_sibling_label = st.selectbox(
+                            "Compare selected node against sibling",
+                            options=sibling_options,
+                            index=0,
+                        )
+                        sibling_node = int(sibling_map[selected_sibling_label])
+                    else:
+                        sibling_node = int(selected_sibling_node)
+                        sibling_row = siblings[siblings["node_id"] == sibling_node]
+                        if not sibling_row.empty:
+                            st.caption(f"Sibling under comparison: {_build_node_label(sibling_row.iloc[0])}")
 
                     sibling_df = decisions[
                         (decisions["window"] == selected_window)
