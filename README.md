@@ -1,311 +1,172 @@
-# Multi-Period Squad Optimization for Flamengo
+# ⚽ Otimização Multi-Período de Elenco
 
-## Overview
+[![Julia](https://img.shields.io/badge/Julia-1.9+-9558B2?style=flat&logo=julia)](https://julialang.org/)
+[![Python](https://img.shields.io/badge/Python-3.9+-3776AB?style=flat&logo=python)](https://www.python.org/)
+[![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?style=flat&logo=streamlit)](https://streamlit.io/)
 
-This repository implements a **multi-period football squad optimization model** in **Julia** using **JuMP** and **Gurobi**.
+Projeto de pesquisa e aplicação prática em **Pesquisa Operacional** para o planejamento de elencos de futebol moderno. O projeto utiliza Programação Linear Inteira Mista (MILP) para otimizar as decisões de compra, venda e escalação de jogadores ao longo de múltiplas janelas de transferência, respeitando regras financeiras rigorosas.
 
-The project combines a deterministic player-evolution pipeline with a mixed-integer optimization model to decide:
+O modelo central é desenvolvido em **Julia (JuMP + Gurobi)** para máxima performance de otimização, acompanhado por um dashboard interativo em **Python (Streamlit)** para análise de cenários e visualização do elenco.
 
-- Who should stay in the squad over time
-- Who should be bought/sold across transfer windows
-- Who should start in each window
-- How to preserve budget feasibility while improving sporting performance
+---
 
-The project was developed as a technical/academic operations research case in the PSR context.
+## 📋 Sumário
+1. [Visão Geral](#1-visão-geral)
+2. [Arquitetura e Fluxo de Dados](#2-arquitetura-e-fluxo-de-dados)
+3. [Modos de Otimização](#3-modos-de-otimização)
+4. [A Formulação Matemática](#4-a-formulação-matemática)
+5. [Requisitos e Instalação](#5-requisitos-e-instalação)
+6. [Como Executar](#6-como-executar)
+7. [Configuração](#7-configuração)
+8. [Saídas e Dashboards](#8-saídas-e-dashboards)
 
-## What Is New in This Version
+---
 
-Compared to the earlier baseline, the current version includes:
+## 🎯 1. Visão Geral
 
-- External experiment configuration via `config/experiment.toml`
-- Explicit **growth potential** map in the data pipeline
-- Explicit **wage map** used in budget dynamics
-- A richer objective function with:
-  - Starter performance
-  - Asset/squad value
-  - Chemistry bonus
-  - Terminal value (final squad + final cash)
-- Chemistry/entrosamento temporal dynamics in the MILP
-- Soft constraints with slack penalties
-- A post-run result analysis script (`analyze_results.jl`)
+O modelo atua como um "Diretor de Futebol Virtual", decidindo janela a janela:
+- 🛒 **Quem contratar** (baseado em Overall, Potencial, Custo e Encaixe Tático).
+- 💰 **Quem vender** (para gerar caixa ou adequar a folha salarial).
+- 🏃 **Quem escalar** (formando os XI iniciais para maximizar a performance em campo).
+- 📊 **Como gerenciar o orçamento** ao longo dos anos, mantendo a saúde financeira.
 
-## Repository Structure
+---
+
+## 🏗️ 2. Arquitetura e Fluxo de Dados
+
+A arquitetura do projeto é dividida em ingestão, processamento, otimização matemática e visualização.
 
 ```text
 .
-├── analyze_results.jl                 # Post-optimization analysis and summaries
-├── main.jl                            # Main pipeline + optimization orchestrator
-├── Project.toml / Manifest.toml       # Julia dependencies
-├── config/
-│   ├── experiment.toml                # Simulation, constraints, objective weights
-│   └── market_settings.toml           # League reputation and IR multipliers
-├── data/
-│   ├── raw/
-│   │   ├── player_stats.csv
-│   │   └── stats_brasileirao_with_correct_teams.csv
-│   └── processed/
-│       ├── processed_player_data.csv  # Cleaned player base
-│       └── player_window_audit.csv    # Unified player-window technical + financial audit
-├── output/
-│   ├── squad_decisions.csv            # Player-level decisions per window
-│   ├── budget_evolution.csv           # Budget path and deficits
-│   └── formation_diagnostics.csv      # Tactical scheme constraints and slacks
-├── src/
-│   ├── data_loader.jl                 # Ingestion, cleaning, map generation, audit export
-│   ├── utils.jl                       # Evolution and market multiplier logic
-│   └── model.jl                       # Complete JuMP/Gurobi MILP model
-├── analysis/
-│   ├── plots.py                       # Optional Python plotting utilities
-│   ├── streamlit_dashboard.py         # Interactive pitch dashboard (Streamlit)
-│   ├── requirements-streamlit.txt     # Python dependencies for dashboard
-│   └── viz/                           # Generated figures
-└── scraper/                           # Data collection scripts (Python)
+├── main.jl                    # Ponto de entrada p/ rodar a otimização
+├── analyze_results.jl         # Script rápido para análise textual dos resultados
+├── config/                    # Configurações gerais (experimentos e mercado)
+│   ├── experiment.toml        
+│   └── market_settings.toml   
+├── data/                      # Dados (brutos e processados)
+│   ├── raw/                   # CSVs com atributos dos jogadores (ex: FIFA/EA FC)
+│   └── processed/             # Base tratada, idades corrigidas, posições
+├── src/                       # Código-fonte Julia
+│   ├── data_loader.jl         # Pipeline de leitura e projeção técnica/financeira
+│   ├── model*.jl              # Formulações MILP (estocástica e determinística)
+│   └── solver_engine.jl       # Instanciação do solver (Gurobi)
+├── analysis/                  # Scripts e Dashboard Python
+│   ├── streamlit_dashboard.py # Interface interativa
+│   └── plots.py               
+├── output/                    # CSVs gerados após a otimização
+└── scraper/                   # Scripts auxiliares para coleta de dados
 ```
 
-## Mathematical Model (MILP)
+---
 
-### Decision Variables
+## 🧠 3. Modos de Otimização
 
-For player $j$ and window $t$:
+O projeto suporta duas abordagens para resolver o problema estrutural do clube:
 
-- $x_{j,t} \in \{0,1\}$: player is in squad
-- $y_{j,t} \in \{0,1\}$: player is in starting XI
-- $buy_{j,t} \in \{0,1\}$: player is bought
-- $sell_{j,t} \in \{0,1\}$: player is sold
-- $budget_t \ge 0$: cash balance
-- $budget\_deficit_t \ge 0$: soft budget violation variable
+### 3.1 Modo Determinístico (Janela a Janela)
+- Otimiza as ações assumindo que o **futuro é perfeitamente conhecido**.
+- Variáveis de estado em janela $t$ (elenco, orçamento) dependem estritamente das decisões tomadas em $t-1$.
+- Excelente para planejamento basal e cenários de "melhor caso" garantido.
+- Arquivo principal: `src/model_deterministic.jl`
 
-Chemistry variables are also included for player pairs:
+### 3.2 Modo Estocástico (Árvore de Cenários / Node-Indexed)
+- Planejamento sob **incerteza**. Modelado em formato de árvore de decisão ponderada por probabilidades.
+- Considera cenários paralelos: lesões de jogadores chave, choques no mercado, inflação de valores, mudanças forçadas de esquema tático.
+- Busca o melhor plano de ação que maximize o valor esperado entre todas as ramificações de futuros possíveis.
+- Arquivo principal: `src/model_stochastic.jl`
 
-- Pair-in-squad indicator
-- Pair-in-starters indicator
-- Chemistry score with temporal update and decay
+---
 
-### Core Constraints
+## 📐 4. A Formulação Matemática
 
-1. Squad flow across windows (with purchase/sale timing)
-2. Budget recursion with:
-   - Purchase costs + transaction overhead
-   - Sale proceeds - sale fee
-   - Seasonal revenues
-   - Wage/signing-related component
-3. Squad size bounds (min/max)
-4. Tactical formation bounds by configurable position groups (e.g., GK/CB/RB/LB/CM/RW/LW/ST)
-5. Exactly 11 starters per window
-6. Starter eligibility: $y_{j,t} \le x_{j,t}$
-7. Buy/sell exclusivity in a window
-8. Chemistry linearization and temporal dynamics
+O núcleo da otimização tenta **Maximizar** uma função objetivo composta por:
+- **Performance Técnica:** Soma do *Overall Rating* do time titular.
+- **Química/Entrosamento:** Bônus para combinações adequadas na escalação natural.
+- **Valor Terminal:** Avaliação financeira do clube e do patrimônio do elenco na última janela.
 
-### Objective Function (Current Version)
+**Sujeito a Restrições (Constraints):**
+- Limite mínimo e máximo de jogadores no elenco.
+- Restrições Táticas estritas (ex: `1 GK`, `2 CB`, `1 ST`, etc.) por janela.
+- Conservação de fluxo (quem entra, deve estar disponível; quem sai, libera a vaga e o salário).
+- Restrições orçamentárias rígidas de Fluxo de Caixa.
+- Limites "Soft" de teto salarial (com variáveis de *slack* que aplicam punições na função objetivo).
 
-The model maximizes a weighted combination of:
+---
 
-1. Asset/squad quality score for rostered players
-2. Tactical performance score for starters
-3. Chemistry bonus
-4. Terminal value (final squad market value + final budget)
+## ⚙️ 5. Requisitos e Instalação
 
-And penalizes:
+### Julia (Motor de Otimização)
+- Julia **1.9+**
+- Instale as dependências (CSV, DataFrames, JuMP, Gurobi, etc.) rodando:
+  ```bash
+  julia --project=. -e 'using Pkg; Pkg.instantiate()'
+  ```
 
-- Friction from transfer activity
-- Soft-constraint slacks
-- Budget deficits (very large penalty)
+### Solver
+- O projeto usa o **Gurobi** (licença acadêmica/comercial necessária).
+- Para alternar para solvers open-source (como o *HiGHS* ou *GLPK*), é necessário editar o `solver_engine.jl`.
 
-All key weights and many constraints are configurable in `config/experiment.toml`.
-
-## Data Pipeline
-
-### 1. Ingestion and Cleaning (`src/data_loader.jl`)
-
-- Loads two raw sources:
-  - Base SoFIFA-like dataset
-  - Curated Brasileirão dataset
-- Removes duplicated players by `player_id`
-- Removes Brazilian league duplicates from base source to prefer curated rows
-- Computes age from DOB
-- Maps positions to granular tactical groups (`GK`, `CB`, `RB`, `LB`, `CM`, `RW`, `LW`, `ST`)
-- Handles missing values (value, IR, club name)
-
-### 2. Deterministic Projections
-
-Generated maps across windows:
-
-- `ovr_map[(player_id, window)]`
-- `value_map[(player_id, window)]`
-- `growth_potential_map[(player_id, window)]`
-- `wage_map[(player_id, window)]`
-
-### 3. Market Adjustment (`config/market_settings.toml`)
-
-Acquisition cost is adjusted from market value by league reputation and international reputation (IR):
-
-$$
-\text{Acquisition Cost} = \text{Market Value} \times \text{Market Multiplier}
-$$
-
-Where the multiplier reflects:
-
-- Origin league reputation vs buyer reputation
-- IR premium
-
-### 4. Unified Audit Export
-
-The pipeline exports a consolidated technical/financial audit table:
-
-- `data/processed/player_window_audit.csv`
-
-## Configuration
-
-Main experiment parameters are defined in `config/experiment.toml`:
-
-- `simulation.num_windows`
-- `optimization.initial_budget`
-- `optimization.seasonal_revenue`
-- `optimization.initial_squad_strategy`
-  - `top_value`
-  - `team:<Club Name>` (example: `team:Flamengo`)
-- `constraints.*` (squad limits, transaction costs, penalties)
-- `formation_catalog.<scheme>.*` exact starter counts by tactical scheme
-- `formation_plan.*` active tactical scheme per window
-- `objective.*` weights and chemistry/risk parameters
-
-## How to Run
-
-### Prerequisites
-
-- Julia 1.9+
-- Gurobi license and installation (required for optimization; pipeline can still run without it)
-
-Install Julia dependencies:
-
-```bash
-julia --project=. -e 'using Pkg; Pkg.instantiate()'
-```
-
-### Run Full Pipeline + Optimization
-
-```bash
-julia --project=. main.jl
-```
-
-### Run with a Custom Experiment File
-
-```bash
-julia --project=. main.jl --config config/experiment.toml
-```
-
-### Behavior When Gurobi Is Not Available
-
-`main.jl` automatically detects whether JuMP/Gurobi can be loaded.
-
-If unavailable, it still runs data processing and exports processed artifacts, then exits gracefully with guidance.
-
-## Analyze Results
-
-After optimization completes:
-
-```bash
-julia --project=. analyze_results.jl
-```
-
-This script prints:
-
-- Window-by-window squad composition
-- Starter quality metrics
-- Transfers (bought/sold) and totals
-- Budget trajectory and deficits
-
-## Optional Python Visualization
-
-`analysis/plots.py` can generate visualization figures from `player_window_audit.csv`.
-
-Typical dependencies:
-
-```bash
-pip install pandas matplotlib seaborn
-```
-
-Run from the `analysis` directory:
-
-```bash
-python plots.py
-```
-
-Generated images are saved to `analysis/viz/`.
-
-## Programmatic Usage (Julia REPL)
-
-```julia
-include("main.jl")
-
-# Load configuration
-exp_cfg = load_experiment_config("config/experiment.toml")
-
-# Build maps and processed artifacts
-(df, ovr_map, value_map, cost_map, growth_potential_map, wage_map) =
-    run_pipeline(exp_cfg.num_windows)
-
-# Solve optimization
-results = run_optimization(
-    df,
-    ovr_map,
-    value_map,
-    cost_map,
-    growth_potential_map,
-    wage_map;
-    initial_budget = exp_cfg.model_params.initial_budget,
-    seasonal_revenue = exp_cfg.model_params.seasonal_revenue,
-    initial_squad_strategy = exp_cfg.initial_squad_strategy,
-    num_windows = exp_cfg.num_windows,
-    model_params_override = exp_cfg.model_params
-)
-```
-
-## Main Output Files
-
-### Data Outputs
-
-- `data/processed/processed_player_data.csv`
-- `data/processed/player_window_audit.csv`
-
-### Optimization Outputs
-
-- `output/squad_decisions.csv`
-- `output/budget_evolution.csv`
-- `output/formation_diagnostics.csv`
-
-### Optional Interactive Dashboard (Streamlit)
-
-Install dashboard dependencies:
-
+### Python (Dashboard Interativo)
+Ideal para usufruir da UI após rodar a otimização.
 ```bash
 pip install -r analysis/requirements-streamlit.txt
 ```
 
-Run dashboard:
+---
 
+## 🚀 6. Como Executar
+
+### 6.1 Rodar a Otimização Completa
+O comando básico processa os dados, gera as projeções e resolve o MILP com o Gurobi baseando-se no `experiment.toml`.
+```bash
+julia --project=. main.jl
+```
+
+*(Opcional) Passando um arquivo de configuração customizado:*
+```bash
+julia --project=. main.jl --config config/experiment.toml
+```
+
+### 6.2 Avaliar Resultados Rapidamente (CLI)
+```bash
+julia --project=. analyze_results.jl
+```
+*(Use `--deterministic` ou `--stochastic` para forçar a análise do arquivo desejado).*
+
+### 6.3 Lançar o Dashboard Visual (Streamlit)
+Veja seu time no nível do gramado e entenda o orçamento visualmente:
 ```bash
 streamlit run analysis/streamlit_dashboard.py
 ```
 
-## Tech Stack
+---
 
-- Julia
-- JuMP.jl
-- Gurobi.jl
-- CSV.jl
-- DataFrames.jl
-- TOML stdlib
-- (Optional) Python + pandas + matplotlib + seaborn for plots
+## 🔧 7. Configuração
 
-## Author
+Todas as regras de negócio podem ser alteradas sem mexer no código através de arquivos `.toml`.
 
-Daniel Rebouças de Sousa Barros
+- **`config/experiment.toml`**: 
+  - `[simulation]`: Número de janelas e filtro de limite de jogadores no subconjunto de escolha.
+  - `[optimization]`: Caixa inicial, orçamento periódico e pesos na função objetivo.
+  - `[constraints]`: Limite numérico do elenco, atrito financeiro de negociação (taxas para agentes).
+  - `[stochastic]`: Probabilidades, ramificações e eventos estocásticos para a simulação de incerteza.
+  - `[formation_catalog.*]` / `[formation_plan]`: Definição de formações táticas disponíveis no tempo.
 
-## License
-
-Academic/professional project. Free to use for educational purposes.
+- **`config/market_settings.toml`**:
+  - Calibrações e multiplicadores financeiros de mercado por liga (La Liga, Premier League, Brasileirão, etc).
 
 ---
 
-Project Status: Functional (deterministic multi-period optimization with chemistry and configurable objectives)
+## 📊 8. Saídas e Dashboards
+
+Os arquivos gerados na pasta `/output/` servem como "tabela fato" das ações sugeridas:
+
+- `squad_decisions.csv`: As decisões detalhadas (Venda/Compra/Fica) de todos os jogadores indexadas no tempo.
+- `budget_evolution.csv`: Demonstração dos resultados, gastos, lucros e saldo atual a cada passo de tempo.
+- `formation_diagnostics.csv`: Resumo de qualidade tática e OVR médio do XI titular em campo.
+- Formatos `*_nodes.csv`: Arquivos equivalentes gerados pela resolução estocástica na árvore de cenários.
+
+---
+
+> 👨‍💻 **Autor**: Daniel Rebouças de Sousa Barros
+> 📄 **Licença**: Projeto acadêmico/profissional (Uso Técnico e Educacional).
