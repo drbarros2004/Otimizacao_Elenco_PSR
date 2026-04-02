@@ -17,9 +17,9 @@ function extract_deterministic_results(
     solve_time::Float64 = 0.0,
     verbose::Bool = true
 )
-    J = data.players.player_id
+    J = Int.(data.players.player_id)
     T = data.windows
-    pos_groups = Dict(row.player_id => row.pos_group for row in eachrow(data.players))
+    pos_groups = Dict(Int(row.player_id) => String(row.pos_group) for row in eachrow(data.players))
 
     decision_rows = []
     for j in J, t in T
@@ -30,6 +30,8 @@ function extract_deterministic_results(
 
         if x_val == 1 || b_val == 1 || s_val == 1
             formation_scheme = get(data.formation_by_window, t, "default")
+            ovr_now = data.ovr_map[(j, t)]
+            ovr_prev = t > first(T) ? data.ovr_map[(j, t - 1)] : ovr_now
             push!(decision_rows, (
                 player_id = j,
                 window = t,
@@ -39,7 +41,11 @@ function extract_deterministic_results(
                 starter_in_window = y_val,
                 bought = b_val,
                 sold = s_val,
-                ovr = data.ovr_map[(j, t)],
+                starter_allowed = 1,
+                injured = 0,
+                ovr = ovr_now,
+                ovr_prev = ovr_prev,
+                ovr_delta = ovr_now - ovr_prev,
                 market_value = data.value_map[(j, t)],
                 acquisition_cost = data.cost_map[(j, t)]
             ))
@@ -48,11 +54,23 @@ function extract_deterministic_results(
 
     df_decisions = DataFrame(decision_rows)
 
-    budget_rows = [(
-        window = t,
-        cash_balance = millions_to_money(value(model[:budget][t])),
-        deficit = millions_to_money(value(model[:budget_deficit][t]))
-    ) for t in T]
+    budget_rows = []
+    for t in T
+        spent = sum(data.cost_map[(j, t)] * round(Int, value(model[:buy][j, t])) for j in J)
+        sold = sum(data.value_map[(j, t)] * round(Int, value(model[:sell][j, t])) for j in J)
+        buys = sum(round(Int, value(model[:buy][j, t])) for j in J)
+        sells = sum(round(Int, value(model[:sell][j, t])) for j in J)
+
+        push!(budget_rows, (
+            window = t,
+            cash_balance = millions_to_money(value(model[:budget][t])),
+            deficit = millions_to_money(value(model[:budget_deficit][t])),
+            transfer_spent = spent,
+            transfer_sold = sold,
+            buys_count = buys,
+            sells_count = sells,
+        ))
+    end
     df_budget = DataFrame(budget_rows)
 
     diagnostics_rows = []
@@ -73,7 +91,7 @@ function extract_deterministic_results(
                 pos_group = pos,
                 required_count = required_count,
                 actual_starters = starters_count,
-                slack_titular = 0.0
+                slack_titular = Float64(required_count - starters_count)
             ))
         end
     end
@@ -91,21 +109,22 @@ end
 Flattens scenario tree metadata into a tidy DataFrame.
 """
 function tree_to_dataframe(data::ModelDataStochastic)
-    leaf_set = Set(data.leaf_nodes)
+    node_ids = sort(collect(keys(data.tree.nodes)))
+    leaf_set = Set(data.tree.leaf_nodes)
     rows = []
 
-    for n in data.node_ids
+    for n in node_ids
         node = data.tree.nodes[n]
-        parent = data.parent_by_node[n]
+        parent = node.parent_id
         effective_scheme = get_effective_tactical_scheme(node)
         scenario_label = get(node.metadata, "manual_label", missing)
 
         push!(rows, (
             node_id = n,
             parent_id = isnothing(parent) ? missing : parent,
-            stage = data.stage_by_node[n],
+            stage = node.stage,
             branch_probability = node.branch_probability,
-            cumulative_probability = data.probability_by_node[n],
+            cumulative_probability = node.cumulative_probability,
             tactical_scheme = effective_scheme,
             scenario_label = scenario_label,
             is_leaf = n in leaf_set,
@@ -130,16 +149,16 @@ function extract_stochastic_results(
     verbose::Bool = true
 )
     J = Int.(data.players.player_id)
-    N = data.node_ids
+    N = sort(collect(keys(data.tree.nodes)))
     pos_groups = Dict(Int(row.player_id) => String(row.pos_group) for row in eachrow(data.players))
 
     decision_rows = []
     for n in N
-        parent = data.parent_by_node[n]
-        parent_id = isnothing(parent) ? missing : parent
-        stage_n = data.stage_by_node[n]
-        prob_n = data.probability_by_node[n]
         node = data.tree.nodes[n]
+        parent = node.parent_id
+        parent_id = isnothing(parent) ? missing : parent
+        stage_n = node.stage
+        prob_n = node.cumulative_probability
         effective_scheme = get_effective_tactical_scheme(node)
         path_id = join(string.(data.path_by_node[n]), "->")
 
@@ -150,6 +169,13 @@ function extract_stochastic_results(
             s_val = round(Int, value(model[:sell][j, n]))
 
             if x_val == 1 || b_val == 1 || s_val == 1
+                ovr_now = data.ovr_node_map[(j, n)]
+                ovr_prev = if isnothing(parent)
+                    ovr_now
+                else
+                    data.ovr_node_map[(j, parent::Int)]
+                end
+                starter_allowed = data.starter_allowed_map[(j, n)]
                 push!(decision_rows, (
                     node_id = n,
                     parent_id = parent_id,
@@ -163,7 +189,11 @@ function extract_stochastic_results(
                     starter_in_node = y_val,
                     bought = b_val,
                     sold = s_val,
-                    ovr = data.ovr_node_map[(j, n)],
+                    starter_allowed = starter_allowed,
+                    injured = starter_allowed == 1 ? 0 : 1,
+                    ovr = ovr_now,
+                    ovr_prev = ovr_prev,
+                    ovr_delta = ovr_now - ovr_prev,
                     market_value = data.value_node_map[(j, n)],
                     acquisition_cost = data.cost_node_map[(j, n)],
                     wage = data.wage_node_map[(j, n)]
@@ -175,24 +205,33 @@ function extract_stochastic_results(
 
     budget_rows = []
     for n in N
-        parent = data.parent_by_node[n]
+        node = data.tree.nodes[n]
+        parent = node.parent_id
         parent_id = isnothing(parent) ? missing : parent
+        spent = sum(data.cost_node_map[(j, n)] * round(Int, value(model[:buy][j, n])) for j in J)
+        sold = sum(data.value_node_map[(j, n)] * round(Int, value(model[:sell][j, n])) for j in J)
+        buys = sum(round(Int, value(model[:buy][j, n])) for j in J)
+        sells = sum(round(Int, value(model[:sell][j, n])) for j in J)
 
         push!(budget_rows, (
             node_id = n,
             parent_id = parent_id,
-            stage = data.stage_by_node[n],
-            cumulative_probability = data.probability_by_node[n],
+            stage = node.stage,
+            cumulative_probability = node.cumulative_probability,
             cash_balance = millions_to_money(value(model[:budget][n])),
-            deficit = millions_to_money(value(model[:budget_deficit][n]))
+            deficit = millions_to_money(value(model[:budget_deficit][n])),
+            transfer_spent = spent,
+            transfer_sold = sold,
+            buys_count = buys,
+            sells_count = sells,
         ))
     end
     df_budget = DataFrame(budget_rows)
 
     diagnostics_rows = []
     for n in N
-        stage_n = data.stage_by_node[n]
         node = data.tree.nodes[n]
+        stage_n = node.stage
         effective_scheme = get_effective_tactical_scheme(node)
 
         for (pos, required_count) in node.position_requirements
@@ -206,7 +245,7 @@ function extract_stochastic_results(
                 pos_group = pos,
                 required_count = required_count,
                 actual_starters = starters_count,
-                slack_titular = 0.0
+                slack_titular = Float64(required_count - starters_count)
             ))
         end
     end

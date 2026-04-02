@@ -47,13 +47,6 @@ end
 struct ModelDataStochastic
     players::DataFrame
     tree::ScenarioTree
-    node_ids::Vector{Int}
-    root_id::Int
-    leaf_nodes::Vector{Int}
-    nodes_by_stage::Dict{Int, Vector{Int}}
-    parent_by_node::Dict{Int, Union{Nothing, Int}}
-    stage_by_node::Dict{Int, Int}
-    probability_by_node::Dict{Int, Float64}
     path_by_node::Dict{Int, Vector{Int}}
     ovr_node_map::Dict{Tuple{Int, Int}, Int}
     value_node_map::Dict{Tuple{Int, Int}, Float64}
@@ -192,24 +185,11 @@ function build_stochastic_model_data(
     parent_by_node = Dict{Int, Union{Nothing, Int}}(
         node_id => tree.nodes[node_id].parent_id for node_id in node_ids
     )
-    stage_by_node = Dict{Int, Int}(
-        node_id => tree.nodes[node_id].stage for node_id in node_ids
-    )
-    probability_by_node = Dict{Int, Float64}(
-        node_id => tree.nodes[node_id].cumulative_probability for node_id in node_ids
-    )
     path_by_node = _build_node_ancestry_map(node_ids, parent_by_node)
 
     model_data = ModelDataStochastic(
         players,
         tree,
-        node_ids,
-        tree.root_id,
-        copy(tree.leaf_nodes),
-        deepcopy(tree.nodes_by_stage),
-        parent_by_node,
-        stage_by_node,
-        probability_by_node,
         path_by_node,
         stochastic_bundle.ovr_map,
         stochastic_bundle.value_map,
@@ -229,32 +209,27 @@ function build_stochastic_model_data(
 end
 
 function assert_stochastic_data_contract(data::ModelDataStochastic)
-    if isempty(data.node_ids)
+    node_ids = sort(collect(keys(data.tree.nodes)))
+    root_id = data.tree.root_id
+
+    if isempty(node_ids)
         error("Scenario tree has no nodes.")
     end
 
-    if !haskey(data.tree.nodes, data.root_id)
-        error("Root node $(data.root_id) not found in scenario tree nodes.")
+    if !haskey(data.tree.nodes, root_id)
+        error("Root node $(root_id) not found in scenario tree nodes.")
     end
 
-    for node_id in data.node_ids
-        if !haskey(data.parent_by_node, node_id)
-            error("Missing parent mapping for node $node_id.")
-        end
-        if !haskey(data.stage_by_node, node_id)
-            error("Missing stage mapping for node $node_id.")
-        end
-        if !haskey(data.probability_by_node, node_id)
-            error("Missing probability mapping for node $node_id.")
-        end
+    for node_id in node_ids
         if !haskey(data.path_by_node, node_id)
             error("Missing ancestry path for node $node_id.")
         end
 
-        parent = data.parent_by_node[node_id]
+        node = data.tree.nodes[node_id]
+        parent = node.parent_id
         if isnothing(parent)
-            if node_id != data.root_id
-                error("Only root node can have no parent. Node $node_id has no parent but root is $(data.root_id).")
+            if node_id != root_id
+                error("Only root node can have no parent. Node $node_id has no parent but root is $(root_id).")
             end
         else
             if !haskey(data.tree.nodes, parent)
@@ -262,13 +237,13 @@ function assert_stochastic_data_contract(data::ModelDataStochastic)
             end
         end
 
-        node_prob = data.probability_by_node[node_id]
+        node_prob = node.cumulative_probability
         if node_prob < 0.0 || node_prob > 1.0
             error("Invalid cumulative probability for node $node_id: $node_prob")
         end
     end
 
-    leaf_prob_sum = sum(get(data.probability_by_node, node_id, 0.0) for node_id in data.leaf_nodes)
+    leaf_prob_sum = sum(data.tree.nodes[node_id].cumulative_probability for node_id in data.tree.leaf_nodes)
     if !isapprox(leaf_prob_sum, 1.0; atol=1e-6)
         error("Leaf cumulative probabilities must sum to 1.0. Current sum: $leaf_prob_sum")
     end
@@ -278,7 +253,7 @@ function assert_stochastic_data_contract(data::ModelDataStochastic)
     end
 
     player_ids = Int.(data.players.player_id)
-    for node_id in data.node_ids
+    for node_id in node_ids
         for p_id in player_ids
             if !haskey(data.ovr_node_map, (p_id, node_id))
                 error("Missing ovr_node_map entry for player $p_id at node $node_id.")

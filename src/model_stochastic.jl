@@ -15,8 +15,8 @@ function build_stochastic_squad_optimization_model(
     # Extract data
     players = data.players
     J = Int.(players.player_id)
-    N = data.node_ids
-    root_id = data.root_id
+    N = sort(collect(keys(data.tree.nodes)))
+    root_id = data.tree.root_id
     pos_groups = Dict(Int(row.player_id) => String(row.pos_group) for row in eachrow(players))
 
     formation_positions = String[]
@@ -81,7 +81,7 @@ function build_stochastic_squad_optimization_model(
             continue
         end
 
-        parent = data.parent_by_node[n]
+        parent = data.tree.nodes[n].parent_id
         if isnothing(parent)
             error("Node $n has no parent and is not root node $(root_id).")
         end
@@ -100,13 +100,13 @@ function build_stochastic_squad_optimization_model(
             continue
         end
 
-        parent = data.parent_by_node[n]
+        parent = data.tree.nodes[n].parent_id
         if isnothing(parent)
             error("Node $n has no parent and is not root node $(root_id).")
         end
         p = parent::Int
 
-        stage_n = data.stage_by_node[n]
+        stage_n = data.tree.nodes[n].stage
         revenue = (stage_n % 2 == 0) ? params.seasonal_revenue : 0.0
 
         signing_costs = AffExpr(0.0)
@@ -214,7 +214,7 @@ function build_stochastic_squad_optimization_model(
             continue
         end
 
-        parent = data.parent_by_node[n]
+        parent = data.tree.nodes[n].parent_id
         if isnothing(parent)
             error("Node $n has no parent and is not root node $(root_id).")
         end
@@ -244,7 +244,7 @@ function build_stochastic_squad_optimization_model(
     non_root_nodes = [n for n in N if n != root_id]
 
     for n in non_root_nodes
-        prob_n = get(data.probability_by_node, n, 0.0)
+        prob_n = data.tree.nodes[n].cumulative_probability
         if prob_n <= 0.0
             continue
         end
@@ -267,7 +267,7 @@ function build_stochastic_squad_optimization_model(
     end
 
     for n in non_root_nodes
-        prob_n = get(data.probability_by_node, n, 0.0)
+        prob_n = data.tree.nodes[n].cumulative_probability
         if prob_n <= 0.0
             continue
         end
@@ -279,8 +279,8 @@ function build_stochastic_squad_optimization_model(
     end
 
     # Terminal value is only accounted for leaf nodes, weighted by cumulative probability.
-    for n in data.leaf_nodes
-        prob_n = get(data.probability_by_node, n, 0.0)
+    for n in data.tree.leaf_nodes
+        prob_n = data.tree.nodes[n].cumulative_probability
         if prob_n <= 0.0
             continue
         end
@@ -296,7 +296,7 @@ function build_stochastic_squad_optimization_model(
     verbose && println("\n📊 Stochastic Model Statistics:")
     verbose && println("    • Players: $(length(J))")
     verbose && println("    • Nodes: $(length(N))")
-    verbose && println("    • Leaf nodes: $(length(data.leaf_nodes))")
+    verbose && println("    • Leaf nodes: $(length(data.tree.leaf_nodes))")
     verbose && println("    • Chemistry Pairs: $(length(pairs))")
     verbose && println("    • Variables: $(num_variables(model))")
     verbose && println("    • Constraints: $(num_constraints(model; count_variable_in_set_constraints=false))")
