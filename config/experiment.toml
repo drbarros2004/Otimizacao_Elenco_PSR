@@ -1,13 +1,13 @@
 [simulation]
 # Number of transfer windows to simulate (2 windows ~= 1 season)
-num_windows = 4
+num_windows = 3
 # Candidate pruning for faster optimization (0 disables).
 top_k_players_per_position = 600
 
 [optimization]
 # Financial setup
-initial_budget = 30000000.0
-seasonal_revenue = 5000000.0
+initial_budget = 30000000.0 # 30 million euros
+seasonal_revenue = 5000000.0 # 5 million euros
 # Options: "top_value" or "team:<Club Name>"
 initial_squad_strategy = "team:Flamengo"
 
@@ -19,7 +19,7 @@ transaction_cost_buy = 0.15
 transaction_cost_sell = 0.12
 signing_bonus_rate = 0.5
 # Soft salary-cap controls based on initial squad payroll
-salary_cap_multiplier_initial = 1.0
+salary_cap_multiplier_initial = 1.0 # qual a diferença entre o multiplier e o window factor
 salary_cap_window_factor = 1.0
 salary_cap_penalty = 500.0
 
@@ -50,7 +50,7 @@ window_0 = "433"
 window_1 = "433"
 window_2 = "442"
 window_3 = "442"
-window_4 = "442"
+# window_4 = "442"
 
 [objective]
 weight_quality = 0.75
@@ -72,7 +72,7 @@ injury_probability = 0.08
 [scenario_tree]
 # One branching factor per stage transition: stage 0->1, 1->2, ..., (W-1)->W.
 # Length must match simulation.num_windows.
-branching_by_stage = [2, 2, 2, 2]
+branching_by_stage = [2, 2, 2]
 
 [scenario_tree.stage_probabilities]
 # Optional; defaults to uniform if omitted.
@@ -88,7 +88,15 @@ stage_4 = [0.50, 0.50]
 # - tactical_override (string): must exist in [formation_catalog].
 # - injury_overrides (array): player names or player_ids forced as unavailable in that node.
 # - market_shock (float): additive branch market shock applied to value dynamics.
-# - chemistry_bonus (float): overrides chemistry multiplier for that node.
+# - chemistry_bonus (float): overrides chemistry multiplier for that node
+
+[scenario_tree.manual_events.node_1]
+label = "Estado Inicial (Flamengo 2026)"
+
+[scenario_tree.manual_events.node_2]
+label = "Continuidade e Título"
+tactical_override = "433"
+chemistry_bonus = 1.2
 
 [scenario_tree.manual_events.node_3]
 label = "Mudança de Técnico + Lesão Craque"
@@ -96,7 +104,14 @@ tactical_override = "442"
 injury_overrides = ["Giorgian de Arrascaeta"]
 market_shock = -0.15
 
-[scenario_tree.manual_events.node_2]
-label = "Continuidade e Título"
-tactical_override = "433"
-chemistry_bonus = 1.2
+[scenario_tree.manual_events.node_4]
+label = "Crise no DM: Pontas"
+injury_overrides = ["Éverton Sousa Soares", "Samuel Dias Lino", "Bruno Henrique Pinto", "Mikey Moore"]
+market_shock = -0.15
+
+[scenario_tree.manual_events.node_5]
+label = "Crise na Gávea"
+market_shock = -0.15
+chemistry_bonus = -1
+
+
