@@ -248,21 +248,22 @@ function _build_player_name_index(df_players::DataFrame)
     return index
 end
 
-function _resolve_manual_injury_ids(
+function _resolve_manual_player_ids(
     raw_overrides,
-    player_name_index::Dict{String, Vector{Int}}
+    player_name_index::Dict{String, Vector{Int}},
+    field_name::String
 )
     if !(raw_overrides isa AbstractVector)
-        error("manual_events.injury_overrides must be an array of names or player_ids.")
+        error("$field_name must be an array of names or player_ids.")
     end
 
-    injury_ids = Set{Int}()
+    player_ids = Set{Int}()
     unresolved = String[]
     ambiguous = String[]
 
     for item in raw_overrides
         if item isa Integer
-            push!(injury_ids, Int(item))
+            push!(player_ids, Int(item))
             continue
         end
 
@@ -282,11 +283,33 @@ function _resolve_manual_injury_ids(
         end
 
         for p_id in matched_ids
-            push!(injury_ids, p_id)
+            push!(player_ids, p_id)
         end
     end
 
-    return injury_ids, unresolved, ambiguous
+    return player_ids, unresolved, ambiguous
+end
+
+function _resolve_manual_injury_ids(
+    raw_overrides,
+    player_name_index::Dict{String, Vector{Int}}
+)
+    return _resolve_manual_player_ids(
+        raw_overrides,
+        player_name_index,
+        "manual_events.injury_overrides"
+    )
+end
+
+function _resolve_manual_forced_sell_ids(
+    raw_overrides,
+    player_name_index::Dict{String, Vector{Int}}
+)
+    return _resolve_manual_player_ids(
+        raw_overrides,
+        player_name_index,
+        "manual_events.forced_sell_overrides"
+    )
 end
 
 function _apply_manual_event_to_node!(
@@ -343,6 +366,19 @@ function _apply_manual_event_to_node!(
         end
     end
 
+    if haskey(event, "forced_sell_overrides")
+        forced_sell_ids, unresolved, ambiguous = _resolve_manual_forced_sell_ids(event["forced_sell_overrides"], player_name_index)
+        event_state["forced_sell_ids"] = forced_sell_ids
+        node.metadata["manual_forced_sell_ids"] = sort(collect(forced_sell_ids))
+
+        if !isempty(unresolved)
+            @warn "Unresolved forced sell overrides at node $node_id: $(join(unresolved, ", "))"
+        end
+        if !isempty(ambiguous)
+            @warn "Ambiguous forced sell override names at node $node_id (mapped to multiple ids): $(join(ambiguous, ", "))"
+        end
+    end
+
     return event_state
 end
 
@@ -355,7 +391,8 @@ Returns maps with keys (player_id, node_id):
 3. growth_potential_node_map
 4. starter_allowed_map  (1 if can start, 0 if unavailable/injured)
 5. sell_allowed_map     (1 if sale allowed, 0 if sale blocked)
-6. chemistry_multiplier_map (node_id -> multiplier, can be 1.0, 0.0, or negative)
+6. forced_sell_node_map (1 if sale is mandatory in node, 0 otherwise)
+7. chemistry_multiplier_map (node_id -> multiplier, can be 1.0, 0.0, or negative)
 """
 function generate_stochastic_projections(
     df_players::DataFrame,
@@ -374,6 +411,7 @@ function generate_stochastic_projections(
     age_node_map = Dict{Tuple{Int, Int}, Int}()
     starter_allowed_map = Dict{Tuple{Int, Int}, Int}()
     sell_allowed_map = Dict{Tuple{Int, Int}, Int}()
+    forced_sell_node_map = Dict{Tuple{Int, Int}, Int}()
     chemistry_multiplier_map = Dict{Int, Float64}()
     player_name_index = _build_player_name_index(df_players)
 
@@ -397,6 +435,7 @@ function generate_stochastic_projections(
     root_node.metadata["chemistry_multiplier"] = root_chemistry_multiplier
 
     root_injury_ids = haskey(root_event_state, "forced_injury_ids") ? root_event_state["forced_injury_ids"] : Set{Int}()
+    root_forced_sell_ids = haskey(root_event_state, "forced_sell_ids") ? root_event_state["forced_sell_ids"] : Set{Int}()
 
     for p_id in player_ids
         root_ovr = round(Int, base_ovr_by_player[p_id])
@@ -412,14 +451,19 @@ function generate_stochastic_projections(
         growth_potential_node_map[(p_id, root_id)] = round(gap * growth_coeff, digits=2)
 
         injured_root = p_id in root_injury_ids
+        forced_sell_root = p_id in root_forced_sell_ids
+
         starter_allowed_map[(p_id, root_id)] = injured_root ? 0 : 1
-        sell_allowed_map[(p_id, root_id)] = injured_root ? 0 : 1
-        root_node.sell_allowed[p_id] = !injured_root
+        sell_allowed_map[(p_id, root_id)] = forced_sell_root ? 1 : (injured_root ? 0 : 1)
+        forced_sell_node_map[(p_id, root_id)] = forced_sell_root ? 1 : 0
+        root_node.sell_allowed[p_id] = sell_allowed_map[(p_id, root_id)] == 1
+
         if injured_root
             push!(root_node.injury_players, p_id)
         end
     end
     root_node.metadata["injury_count"] = length(root_node.injury_players)
+    root_node.metadata["forced_sell_count"] = length(root_forced_sell_ids)
 
     stage_ids = sort(collect(keys(tree.nodes_by_stage)))
 
@@ -436,6 +480,7 @@ function generate_stochastic_projections(
             parent_effective_scheme = get_effective_tactical_scheme(parent_node)
             event_state = _apply_manual_event_to_node!(node, node_id, stochastic_cfg, player_name_index)
             forced_injury_ids = haskey(event_state, "forced_injury_ids") ? event_state["forced_injury_ids"] : Set{Int}()
+            forced_sell_ids = haskey(event_state, "forced_sell_ids") ? event_state["forced_sell_ids"] : Set{Int}()
 
             if haskey(event_state, "tactical_override")
                 node.metadata["effective_tactical_scheme"] = String(event_state["tactical_override"])
@@ -497,16 +542,20 @@ function generate_stochastic_projections(
                 growth_potential_node_map[(p_id, node_id)] = round(gap * growth_coeff, digits=2)
 
                 injured_now = (rand(rng) < stochastic_cfg.injury_probability) || (p_id in forced_injury_ids)
+                forced_sell_now = p_id in forced_sell_ids
+
                 starter_allowed_map[(p_id, node_id)] = injured_now ? 0 : 1
-                sell_allowed_map[(p_id, node_id)] = injured_now ? 0 : 1
+                sell_allowed_map[(p_id, node_id)] = forced_sell_now ? 1 : (injured_now ? 0 : 1)
+                forced_sell_node_map[(p_id, node_id)] = forced_sell_now ? 1 : 0
 
                 if injured_now
                     push!(node.injury_players, p_id)
                 end
-                node.sell_allowed[p_id] = !injured_now
+                node.sell_allowed[p_id] = sell_allowed_map[(p_id, node_id)] == 1
             end
 
             node.metadata["injury_count"] = length(node.injury_players)
+            node.metadata["forced_sell_count"] = length(forced_sell_ids)
         end
     end
 
@@ -521,6 +570,7 @@ function generate_stochastic_projections(
         growth_potential_node_map,
         starter_allowed_map,
         sell_allowed_map,
+        forced_sell_node_map,
         chemistry_multiplier_map
     )
 end
@@ -759,7 +809,8 @@ function export_node_analysis(
     value_node_map::Dict,
     cost_node_map::Dict,
     starter_allowed_map::Dict,
-    sell_allowed_map::Dict
+    sell_allowed_map::Dict,
+    forced_sell_node_map::Dict
 )
     println("📊 Generating node-level audit report...")
 
@@ -786,7 +837,8 @@ function export_node_analysis(
                 market_value_eur = round(value_node_map[(p_id, node_id)], digits=0),
                 acquisition_cost_eur = round(cost_node_map[(p_id, node_id)], digits=0),
                 starter_allowed = starter_allowed_map[(p_id, node_id)],
-                sell_allowed = sell_allowed_map[(p_id, node_id)]
+                sell_allowed = sell_allowed_map[(p_id, node_id)],
+                forced_sell = forced_sell_node_map[(p_id, node_id)]
             ))
         end
     end

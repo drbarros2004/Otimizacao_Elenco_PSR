@@ -157,6 +157,26 @@ function _parse_manual_events(
             event["injury_overrides"] = parsed_injuries
         end
 
+        if haskey(raw_event, "forced_sell_overrides")
+            forced_sell_raw = raw_event["forced_sell_overrides"]
+            if !(forced_sell_raw isa AbstractVector)
+                error("scenario_tree.manual_events.$(raw_key).forced_sell_overrides must be an array of names or player_ids.")
+            end
+
+            parsed_forced_sell = Any[]
+            for item in forced_sell_raw
+                if item isa Integer
+                    push!(parsed_forced_sell, Int(item))
+                else
+                    txt = strip(String(item))
+                    if !isempty(txt)
+                        push!(parsed_forced_sell, txt)
+                    end
+                end
+            end
+            event["forced_sell_overrides"] = parsed_forced_sell
+        end
+
         if haskey(raw_event, "market_shock")
             event["market_shock"] = Float64(raw_event["market_shock"])
         end
@@ -638,6 +658,7 @@ function run_pipeline(
         node_growth_potential_map,
         starter_allowed_map,
         sell_allowed_map,
+        forced_sell_node_map,
         chemistry_multiplier_map = generate_stochastic_projections(
             df,
             scenario_tree,
@@ -655,7 +676,8 @@ function run_pipeline(
             node_value_map,
             node_cost_map,
             starter_allowed_map,
-            sell_allowed_map
+            sell_allowed_map,
+            forced_sell_node_map
         )
 
         stochastic_bundle = (
@@ -667,6 +689,7 @@ function run_pipeline(
             wage_map = node_wage_map,
             starter_allowed_map = starter_allowed_map,
             sell_allowed_map = sell_allowed_map,
+            forced_sell_node_map = forced_sell_node_map,
             chemistry_multiplier_map = chemistry_multiplier_map,
             position_requirements_map = node_position_requirements,
             allow_root_transactions = stochastic_config.allow_root_transactions

@@ -200,9 +200,25 @@ function build_stochastic_squad_optimization_model(
     for j in J, n in N
         starter_allowed = data.starter_allowed_map[(j, n)]
         sell_allowed = data.sell_allowed_map[(j, n)]
+        forced_sell = data.forced_sell_node_map[(j, n)]
 
         @constraint(model, y[j,n] <= x[j,n] * starter_allowed)
         @constraint(model, sell[j,n] <= sell_allowed)
+
+        if forced_sell == 1
+            @constraint(model, sell[j,n] == 1)
+
+            if n != root_id
+                parent = data.tree.nodes[n].parent_id
+                if isnothing(parent)
+                    error("Node $n has no parent and is not root node $(root_id).")
+                end
+                p = parent::Int
+
+                # Forced sale can only happen if the player is owned at the parent node.
+                @constraint(model, x[j,p] == 1)
+            end
+        end
     end
 
     # ==== TRANSACTION EXCLUSIVITY ====

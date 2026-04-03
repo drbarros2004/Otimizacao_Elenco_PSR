@@ -54,6 +54,7 @@ struct ModelDataStochastic
     wage_node_map::Dict{Tuple{Int, Int}, Float64}
     starter_allowed_map::Dict{Tuple{Int, Int}, Int}
     sell_allowed_map::Dict{Tuple{Int, Int}, Int}
+    forced_sell_node_map::Dict{Tuple{Int, Int}, Int}
     chemistry_multiplier_map::Dict{Int, Float64}
     position_requirements_map::Dict{Tuple{String, Int}, Int}
     allow_root_transactions::Bool
@@ -205,6 +206,7 @@ function build_stochastic_model_data(
         stochastic_bundle.wage_map,
         stochastic_bundle.starter_allowed_map,
         stochastic_bundle.sell_allowed_map,
+        stochastic_bundle.forced_sell_node_map,
         stochastic_bundle.chemistry_multiplier_map,
         stochastic_bundle.position_requirements_map,
         stochastic_bundle.allow_root_transactions,
@@ -283,6 +285,20 @@ function assert_stochastic_data_contract(data::ModelDataStochastic)
             end
             if !haskey(data.sell_allowed_map, (p_id, node_id))
                 error("Missing sell_allowed_map entry for player $p_id at node $node_id.")
+            end
+            if !haskey(data.forced_sell_node_map, (p_id, node_id))
+                error("Missing forced_sell_node_map entry for player $p_id at node $node_id.")
+            end
+
+            forced_sell = data.forced_sell_node_map[(p_id, node_id)]
+            if !(forced_sell in (0, 1))
+                error("forced_sell_node_map must be binary (0/1). Found $forced_sell for player $p_id at node $node_id.")
+            end
+            if node_id == root_id && forced_sell == 1
+                error("Forced sale is not allowed at root node $root_id (player $p_id).")
+            end
+            if forced_sell == 1 && data.sell_allowed_map[(p_id, node_id)] == 0
+                error("Forced sale conflict for player $p_id at node $node_id: sell_allowed_map is 0.")
             end
         end
 
