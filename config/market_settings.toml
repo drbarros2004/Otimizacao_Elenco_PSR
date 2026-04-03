@@ -23,7 +23,7 @@ free_agent_wage_multiplier = 5.0
 # Strong Leagues
 "Primeira Liga" = 1.2
 "Eredivisie" = 1.1
-"Campeonato Brasileiro" = 1.0
+"Brazil Serie A" = 1.0
 "Liga Profesional de Fútbol" = 0.9
 
 # Alternative Leagues
