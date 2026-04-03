@@ -2,6 +2,23 @@
 Stochastic Node-Based Squad Optimization Model (Pantuso-style).
 """
 
+"""
+Computes the signing bonus in EUR for node `n`, applying free-agent premium when transfer fee is low.
+"""
+function _compute_signing_cost_eur_stochastic(
+    cost::Real,
+    wage::Real,
+    ovr::Real,
+    signing_bonus_rate::Real
+)
+    if cost < 100_000
+        multiplier = get_free_agent_signing_multiplier(Int(round(ovr)))
+        return Float64(wage) * 52 * Float64(signing_bonus_rate) * multiplier
+    end
+
+    return Float64(wage) * 52 * Float64(signing_bonus_rate)
+end
+
 function build_stochastic_squad_optimization_model(
     data::ModelDataStochastic,
     params::ModelParameters;
@@ -117,14 +134,13 @@ function build_stochastic_squad_optimization_model(
             cost = data.cost_node_map[(j, n)]
             wage = data.wage_node_map[(j, n)]
             ovr = data.ovr_node_map[(j, n)]
-            is_free_agent = (cost < 100_000)
 
-            signing_cost = if is_free_agent
-                multiplier = get_free_agent_signing_multiplier(ovr)
-                wage * 52 * params.signing_bonus_rate * multiplier
-            else
-                wage * 52 * params.signing_bonus_rate
-            end
+            signing_cost = _compute_signing_cost_eur_stochastic(
+                cost,
+                wage,
+                ovr,
+                params.signing_bonus_rate
+            )
 
             add_to_expression!(signing_costs, money_to_millions(signing_cost) * buy[j, p])
         end
