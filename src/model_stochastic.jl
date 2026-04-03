@@ -5,8 +5,8 @@ Stochastic Node-Based Squad Optimization Model (Pantuso-style).
 function build_stochastic_squad_optimization_model(
     data::ModelDataStochastic,
     params::ModelParameters;
-    verbose::Bool=true
-)
+    verbose::Bool=true )
+
     verbose && println("\n Building Stochastic Node-Based Squad Optimization Model...")
 
     model = Model(Gurobi.Optimizer)
@@ -60,9 +60,12 @@ function build_stochastic_squad_optimization_model(
     for j in J
         initial_presence = j in data.initial_squad ? 1 : 0
         @constraint(model, x[j, root_id] == initial_presence)
-        # Keep deterministic timing parity: no transaction in initial state.
-        @constraint(model, buy[j, root_id] == 0)
-        @constraint(model, sell[j, root_id] == 0)
+
+        # Optional first-stage (here-and-now) decision at root.
+        if !data.allow_root_transactions
+            @constraint(model, buy[j, root_id] == 0)
+            @constraint(model, sell[j, root_id] == 0)
+        end
     end
 
     for (i, j) in pairs
@@ -209,6 +212,25 @@ function build_stochastic_squad_optimization_model(
         @constraint(model, buy[j,n] + sell[j,n] <= 1)
     end
 
+    # ==== MINIMUM HOLDING PERIOD ====
+    verbose && println("  ├─ Minimum holding period constraints...")
+
+    for n in N
+        if n == root_id
+            continue
+        end
+
+        parent = data.tree.nodes[n].parent_id
+        if isnothing(parent)
+            error("Node $n has no parent and is not root node $(root_id).")
+        end
+        p = parent::Int
+
+        for j in J
+            @constraint(model, sell[j,n] + buy[j,p] <= 1)
+        end
+    end
+
     # ==== CHEMISTRY LINEARIZATION ====
     verbose && println("  ├─ Chemistry linearization by node...")
 
@@ -256,6 +278,12 @@ function build_stochastic_squad_optimization_model(
             continue
         end
 
+        parent = data.tree.nodes[n].parent_id
+        if isnothing(parent)
+            error("Node $n has no parent and is not root node $(root_id).")
+        end
+        p = parent::Int
+
         for j in J
             score_mercado = (
                 params.weight_quality * data.ovr_node_map[(j,n)] +
@@ -266,7 +294,8 @@ function build_stochastic_squad_optimization_model(
             score_tatico = data.ovr_node_map[(j,n)] * 1.0
             add_to_expression!(obj_terms, prob_n * params.peso_performance * score_tatico * y[j,n])
 
-            add_to_expression!(obj_terms, -prob_n * params.friction_penalty * buy[j,n])
+            # Parent decisions are executed on the edge p -> n, so friction must penalize buy[j,p].
+            add_to_expression!(obj_terms, -prob_n * params.friction_penalty * buy[j,p])
         end
 
         for p in formation_positions
