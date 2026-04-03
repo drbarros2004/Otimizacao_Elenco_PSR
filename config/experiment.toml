@@ -23,6 +23,9 @@ salary_cap_multiplier_initial = 1.0 # qual a diferença entre o multiplier e o w
 salary_cap_penalty = 500.0
 foreign_limit = 9
 foreign_violation_penalty = 80000
+domestic_nationalities = ["Brazilian", "Brazil", "Brasil"]
+unknown_nationality_is_foreign = true
+nationality_fallback_to_league = false
 
 squad_position_penalty = 40000.0 # Penalidade suave (menor que o salário)
 
