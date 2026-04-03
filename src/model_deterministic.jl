@@ -2,6 +2,23 @@
 Deterministic Squad Optimization Model (Multi-Period MILP).
 """
 
+"""
+Computes the signing bonus in EUR, applying free-agent premium when transfer fee is low.
+"""
+function _compute_signing_cost_eur(
+    cost::Real,
+    wage::Real,
+    ovr::Real,
+    signing_bonus_rate::Real
+)
+    if cost < 100_000
+        multiplier = get_free_agent_signing_multiplier(Int(round(ovr)))
+        return Float64(wage) * 52 * Float64(signing_bonus_rate) * multiplier
+    end
+
+    return Float64(wage) * 52 * Float64(signing_bonus_rate)
+end
+
 function build_squad_optimization_model(data::ModelData, params::ModelParameters; verbose::Bool=true)
     verbose && println("\n Building Complete Multi-Period Squad Optimization Model...")
 
@@ -97,17 +114,12 @@ function build_squad_optimization_model(data::ModelData, params::ModelParameters
                 wage = data.wage_map[(j, t)]
                 ovr = data.ovr_map[(j, t)]
 
-                # Determine if player is a free agent
-                is_free_agent = (cost < 100_000)
-
-                if is_free_agent
-                    # Apply OVR-based multiplier for free agents
-                    multiplier = get_free_agent_signing_multiplier(ovr)
-                    signing_cost = wage * 52 * params.signing_bonus_rate * multiplier
-                else
-                    # Normal signing bonus for regular transfers
-                    signing_cost = wage * 52 * params.signing_bonus_rate
-                end
+                signing_cost = _compute_signing_cost_eur(
+                    cost,
+                    wage,
+                    ovr,
+                    params.signing_bonus_rate
+                )
 
                 add_to_expression!(signing_costs, money_to_millions(signing_cost) * buy[j, t-1])
             end
@@ -165,7 +177,9 @@ function build_squad_optimization_model(data::ModelData, params::ModelParameters
     end
 
     # ==== SQUAD DEPTH BY POSITION (SOFT UPPER BOUNDS) ====
-    verbose && println("  ├─ Squad depth constraints by position (soft)...")
+    # Meaning: desincentivize redundancy in positions. The model is penalized if
+    #          there are more players (for a certain position) than necessary.
+    verbose && println("  ├─ Squad depth constraints by position (soft upper bounds)...")
 
     for t in T
         _, formation_t = get_window_formation(params, t)
@@ -183,6 +197,7 @@ function build_squad_optimization_model(data::ModelData, params::ModelParameters
     end
 
     # ==== STARTER ELIGIBILITY ====
+    # Meaning: A player is only allowed to be a starter if he is part of the team.
     verbose && println("  ├─ Starter eligibility...")
 
     for j in J, t in T
@@ -256,6 +271,7 @@ function build_squad_optimization_model(data::ModelData, params::ModelParameters
     end
 
     # 4. Friction penalty
+    # Meaning: we can apply a multiplier factor for ev
     for j in J, t in T
         if t > first(T) && t > 1  # buy at t-1 affects t
             add_to_expression!(obj_terms, -params.friction_penalty * buy[j, t-1])
