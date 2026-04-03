@@ -144,6 +144,7 @@ struct ModelResults
     squad_decisions::DataFrame
     budget_evolution::DataFrame
     formation_diagnostics::DataFrame
+    compliance_results::DataFrame
 end
 
 struct StochasticModelResults
@@ -154,6 +155,7 @@ struct StochasticModelResults
     budget_evolution::DataFrame
     tree_metadata::DataFrame
     formation_diagnostics::DataFrame
+    compliance_results::DataFrame
 end
 
 # =============================================================================

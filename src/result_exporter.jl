@@ -27,6 +27,110 @@ function _build_player_metadata(players::DataFrame, is_foreign_map::Dict{Int, Bo
     return player_meta
 end
 
+function _formation_positions_from_catalog(formation_catalog::Dict{String, Dict{String, Int}})
+    positions = String[]
+    for limits in values(formation_catalog)
+        append!(positions, collect(keys(limits)))
+    end
+    return unique(sort(positions))
+end
+
+function _extract_deterministic_compliance_results(model::Model, data::ModelData)
+    T = data.windows
+    formation_positions = _formation_positions_from_catalog(data.formation_catalog)
+
+    compliance_rows = []
+    for t in T
+        salary_slack = Float64(value(model[:slack_salario][t]))
+        push!(compliance_rows, (
+            window = t,
+            constraint_name = "salary_cap",
+            pos_group = missing,
+            slack_value = salary_slack,
+            is_violated = salary_slack > 1e-8,
+            constraint_modeled = true,
+        ))
+
+        for pos in formation_positions
+            pos_slack = Float64(value(model[:slack_posicao][pos, t]))
+            push!(compliance_rows, (
+                window = t,
+                constraint_name = "squad_depth_position",
+                pos_group = pos,
+                slack_value = pos_slack,
+                is_violated = pos_slack > 1e-8,
+                constraint_modeled = true,
+            ))
+        end
+
+        push!(compliance_rows, (
+            window = t,
+            constraint_name = "foreign_squad_limit",
+            pos_group = missing,
+            slack_value = 0.0,
+            is_violated = false,
+            constraint_modeled = false,
+        ))
+    end
+
+    return DataFrame(compliance_rows)
+end
+
+function _extract_stochastic_compliance_results(model::Model, data::ModelDataStochastic)
+    N = sort(collect(keys(data.tree.nodes)))
+    formation_positions = _formation_positions_from_catalog(data.formation_catalog)
+
+    compliance_rows = []
+    for n in N
+        node = data.tree.nodes[n]
+        parent = node.parent_id
+        parent_id = isnothing(parent) ? missing : parent
+
+        salary_slack = Float64(value(model[:slack_salario][n]))
+        push!(compliance_rows, (
+            node_id = n,
+            parent_id = parent_id,
+            stage = node.stage,
+            cumulative_probability = node.cumulative_probability,
+            constraint_name = "salary_cap",
+            pos_group = missing,
+            slack_value = salary_slack,
+            is_violated = salary_slack > 1e-8,
+            constraint_modeled = true,
+        ))
+
+        foreign_excess = Float64(value(model[:excess_foreigners][n]))
+        push!(compliance_rows, (
+            node_id = n,
+            parent_id = parent_id,
+            stage = node.stage,
+            cumulative_probability = node.cumulative_probability,
+            constraint_name = "foreign_squad_limit",
+            pos_group = missing,
+            slack_value = foreign_excess,
+            is_violated = foreign_excess > 1e-8,
+            constraint_modeled = true,
+        ))
+
+        for pos in formation_positions
+            pos_slack = Float64(value(model[:slack_posicao][pos, n]))
+            push!(compliance_rows, (
+                node_id = n,
+                parent_id = parent_id,
+                stage = node.stage,
+                cumulative_probability = node.cumulative_probability,
+                constraint_name = "squad_depth_position",
+                pos_group = pos,
+                slack_value = pos_slack,
+                is_violated = pos_slack > 1e-8,
+                constraint_modeled = true,
+            ))
+        end
+    end
+
+    return DataFrame(compliance_rows)
+end
+
 """
     extract_deterministic_results(model, data; ...)
 
@@ -119,10 +223,11 @@ function extract_deterministic_results(
     end
 
     df_formation_diagnostics = DataFrame(diagnostics_rows)
+    df_compliance = _extract_deterministic_compliance_results(model, data)
 
     verbose && println("✅ Solution extracted successfully!")
 
-    return ModelResults(model, objective_value, solve_time, df_decisions, df_budget, df_formation_diagnostics)
+    return ModelResults(model, objective_value, solve_time, df_decisions, df_budget, df_formation_diagnostics, df_compliance)
 end
 
 """
@@ -298,6 +403,7 @@ function extract_stochastic_results(
         end
     end
     df_formation_diagnostics = DataFrame(diagnostics_rows)
+    df_compliance = _extract_stochastic_compliance_results(model, data)
     df_tree = tree_to_dataframe(data)
 
     verbose && println("✅ Stochastic solution extracted successfully!")
@@ -309,7 +415,8 @@ function extract_stochastic_results(
         df_decisions,
         df_budget,
         df_tree,
-        df_formation_diagnostics
+        df_formation_diagnostics,
+        df_compliance
     )
 end
 
@@ -328,11 +435,13 @@ function export_results(results::ModelResults, data::ModelData, output_dir::Stri
     CSV.write("$output_dir/squad_decisions.csv", df_output)
     CSV.write("$output_dir/budget_evolution.csv", results.budget_evolution)
     CSV.write("$output_dir/formation_diagnostics.csv", results.formation_diagnostics)
+    CSV.write("$output_dir/compliance_results.csv", results.compliance_results)
 
     println("\n💾 Results exported to '$output_dir/':")
     println("   • squad_decisions.csv")
     println("   • budget_evolution.csv")
     println("   • formation_diagnostics.csv")
+    println("   • compliance_results.csv")
 
     return df_output
 end
@@ -357,12 +466,14 @@ function export_stochastic_results(
     CSV.write("$output_dir/budget_evolution_nodes.csv", results.budget_evolution)
     CSV.write("$output_dir/tree_metadata.csv", results.tree_metadata)
     CSV.write("$output_dir/formation_diagnostics_nodes.csv", results.formation_diagnostics)
+    CSV.write("$output_dir/compliance_results_nodes.csv", results.compliance_results)
 
     println("\n💾 Stochastic results exported to '$output_dir/':")
     println("   • squad_decisions_nodes.csv")
     println("   • budget_evolution_nodes.csv")
     println("   • tree_metadata.csv")
     println("   • formation_diagnostics_nodes.csv")
+    println("   • compliance_results_nodes.csv")
 
     return df_output
 end
