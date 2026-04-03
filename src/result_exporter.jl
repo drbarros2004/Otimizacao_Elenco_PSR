@@ -51,6 +51,16 @@ function _extract_deterministic_compliance_results(model::Model, data::ModelData
             constraint_modeled = true,
         ))
 
+        budget_slack = Float64(value(model[:budget_deficit][t]))
+        push!(compliance_rows, (
+            window = t,
+            constraint_name = "budget_deficit",
+            pos_group = missing,
+            slack_value = budget_slack,
+            is_violated = budget_slack > 1e-8,
+            constraint_modeled = true,
+        ))
+
         for pos in formation_positions
             pos_slack = Float64(value(model[:slack_posicao][pos, t]))
             push!(compliance_rows, (
@@ -96,6 +106,19 @@ function _extract_stochastic_compliance_results(model::Model, data::ModelDataSto
             pos_group = missing,
             slack_value = salary_slack,
             is_violated = salary_slack > 1e-8,
+            constraint_modeled = true,
+        ))
+
+        budget_slack = Float64(value(model[:budget_deficit][n]))
+        push!(compliance_rows, (
+            node_id = n,
+            parent_id = parent_id,
+            stage = node.stage,
+            cumulative_probability = node.cumulative_probability,
+            constraint_name = "budget_deficit",
+            pos_group = missing,
+            slack_value = budget_slack,
+            is_violated = budget_slack > 1e-8,
             constraint_modeled = true,
         ))
 
