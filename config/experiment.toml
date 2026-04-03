@@ -89,9 +89,9 @@ risk_appetite = 0.001
 # Keep false to preserve deterministic behavior.
 enabled = true
 allow_root_transactions = true
-ovr_shock_sigma = 0.06
-value_shock_sigma = 0.12
-chemistry_conflict_probability = 0.10
+ovr_shock_sigma = 0.06 # standard deviation of the shock applied to OVR 
+value_shock_sigma = 0.12 # standard deviation of the shock applied to market value 
+chemistry_conflict_probability = 0.10 # risk of conflicts that can penalize team chemistry
 injury_probability = 0.08
 
 [scenario_tree]
@@ -104,7 +104,6 @@ branching_by_stage = [2, 2, 2]
 stage_1 = [0.60, 0.40]
 stage_2 = [0.50, 0.50]
 stage_3 = [0.55, 0.45]
-stage_4 = [0.50, 0.50]
 
 # Optional hybrid mode: manual events by node.
 # Key format must be node_<id> (e.g., node_3).
@@ -116,78 +115,74 @@ stage_4 = [0.50, 0.50]
 # - market_shock (float): additive branch market shock applied to value dynamics.
 # - chemistry_bonus (float): overrides chemistry multiplier for that node
 
+# --- ESTÁGIO 0 (O PRESENTE) ---
 [scenario_tree.manual_events.node_1]
 label = "Estado Inicial (Flamengo 2026)"
 
+# --- ESTÁGIO 1 (JANELA DE INVERNO) ---
 [scenario_tree.manual_events.node_2]
-label = "Continuidade e Título"
+label = "Sucesso e Assédio Europeu"
+# Simula a saída forçada do principal ativo por multa rescisória (Venda Forçada)
 forced_sell_overrides = ["Pedro Guilherme Abreu dos Santos"]
-tactical_override = "433"
-chemistry_bonus = 1.2
-
-[scenario_tree.manual_events.node_3]
-label = "Mudança de Técnico + Lesão Craque"
-tactical_override = "532"
-forced_sell_overrides = ["Pedro Guilherme Abreu dos Santos"]
-injury_overrides = ["Giorgian de Arrascaeta"]
-market_shock = -0.15
-
-[scenario_tree.manual_events.node_4]
-label = "Crise no DM: Pontas"
-injury_overrides = [14536503, 15249463, 14536296, 14536351, 14536555, 14536342, 14536469, 15990611, 14536430, 14871731]
-market_shock = -0.15
-
-[scenario_tree.manual_events.node_5]
-label = "Crise na Gávea"
-market_shock = -0.15
-chemistry_bonus = -1
-
-# --- ESTÁGIO 2 (Filhos do Nó 3 - O ramo da Crise) ---
-
-[scenario_tree.manual_events.node_6]
-label = "Choque de Gestão (Recuperação)"
-# O time reage à saída do técnico, melhora o ambiente e o mercado volta a valorizar os ativos.
-market_shock = 0.10
 chemistry_bonus = 1.1
-tactical_override = "433"
-
-[scenario_tree.manual_events.node_7]
-label = "Crise Financeira: Saída de Pilares"
-injury_overrides = ["Pedro Guilherme"]
-forced_sell_overrides = ["Giorgian de Arrascaeta"]
-market_shock = -0.25
-chemistry_bonus = 0.8
-
-# --- ESTÁGIO 3 (Nós Folha do ramo da Crise - Resultados Finais) ---
-
-[scenario_tree.manual_events.node_12]
-label = "Retorno do Craque e Estabilidade"
-# Recuperação total após o choque de gestão do Nó 6.
-market_shock = 0.15
-chemistry_bonus = 1.2
-
-[scenario_tree.manual_events.node_13]
-label = "Venda de Jóias da Base"
-# O clube precisa de caixa após a estabilização do Nó 6.
-# Tiramos jogadores promissores para simular vendas inevitáveis.
-injury_overrides = ["Lorran Lucas", "Matheus Gonçalves"]
 market_shock = 0.05
 
-[scenario_tree.manual_events.node_14]
-label = "Reconstrução com Elenco Curto"
-# Resultado da Crise Financeira do Nó 7. O time sobrevive mas perde coesão.
-tactical_override = "442"
-market_shock = -0.10
-chemistry_bonus = 0.9
+[scenario_tree.manual_events.node_3]
+label = "Instabilidade Técnica (Troca de Técnico)"
+# Mudança para esquema 5-3-2 exige zagueiros extras e pune a química temporariamente
+tactical_override = "532"
+chemistry_bonus = 0.85
+injury_overrides = ["Giorgian de Arrascaeta"]
+market_shock = -0.05
 
+# --- ESTÁGIO 2 (JANELA DE VERÃO - MEIO DA TEMPORADA) ---
+
+# Ramos do Sucesso (Nó 2)
+[scenario_tree.manual_events.node_4]
+label = "Manutenção da Hegemonia"
+# Cenário de calmaria técnica, foca em valorização orgânica
+chemistry_bonus = 1.15
+market_shock = 0.10
+
+[scenario_tree.manual_events.node_5]
+label = "Venda de Jóia da Base"
+# O modelo perde Lorran por venda forçada, forçando reposição no mercado
+forced_sell_overrides = ["Wallace Yan de Souza Barreto"]
+injury_overrides = ["Vitor Eduardo da Silva Matos"] # Lesão moderada
+market_shock = 0.05
+
+# Ramos da Instabilidade (Nó 3)
+[scenario_tree.manual_events.node_6]
+label = "Choque de Gestão (Recuperação)"
+# Volta ao 4-3-3 clássico, mercado reage bem à nova diretoria
+tactical_override = "433"
+market_shock = 0.15
+chemistry_bonus = 1.1
+
+[scenario_tree.manual_events.node_7]
+label = "Crise no DM: Teste de Capacidade Efetiva"
+# Cenário de impacto severo: lesão do goleiro titular e do capitão
+# Testa se o modelo contratou reservas suficientes nas etapas anteriores
+injury_overrides = ["Agustín Rossi", "Jorge Luiz Frello Filho"]
+market_shock = -0.15
+chemistry_bonus = 0.7
+
+# --- ESTÁGIO 3 (NÓS FOLHA - RESULTADOS FINAIS) ---
+
+# Exemplo de um desastre total para Stress Test (Filho do Nó 7)
 [scenario_tree.manual_events.node_15]
-label = "Falência Técnica (Stress Test)"
-# O pior cenário possível: lesões em massa + mercado em queda + vestiário quebrado.
-# Teste de robustez: como o modelo se comporta se perder quase todos os titulares?
-# Lesão massiva com 10 jogadores nucleares do Flamengo (via player_id para evitar ambiguidades de nome).
-injury_overrides = [14536503, 15249463, 14536296, 14536351, 14536555, 14536342, 14536469, 15990611, 14536430, 14871731]
-market_shock = -0.40
+label = "Colapso Técnico (Stress Test Final)"
+# Perda de múltiplos titulares. Se a capacidade efetiva cair abaixo do mínimo, 
+# o solver mostrará inviabilidade ou penalidades massivas.
+injury_overrides = [
+    "Agustín Rossi", "Leonardo Rech Ortiz", "Nicolás de la Cruz", 
+    "Jorge Luiz Frello Filho", "Éverton Sousa Soares"
+]
+market_shock = -0.30
 chemistry_bonus = 0.5
 
-
-
+# Exemplo de glória total (Filho do Nó 4)
+[scenario_tree.manual_events.node_8]
+label = "Valorização Máxima do Elenco"
+market_shock = 0.25
+chemistry_bonus = 1.3

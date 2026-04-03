@@ -677,7 +677,8 @@ function run_pipeline(
             node_cost_map,
             starter_allowed_map,
             sell_allowed_map,
-            forced_sell_node_map
+            forced_sell_node_map,
+            chemistry_multiplier_map
         )
 
         stochastic_bundle = (
@@ -813,7 +814,7 @@ function run_optimization(df::DataFrame, ovr_map::Dict, value_map::Dict, cost_ma
 end
 
 """
-    run_optimization_stochastic(df::DataFrame, deterministic_cost_map::Dict, stochastic_bundle;
+    run_optimization_stochastic(df::DataFrame, stochastic_bundle;
                                 initial_budget::Float64=150e6,
                                 initial_squad_strategy::String="top_value")
 
@@ -821,7 +822,6 @@ Runs the node-indexed stochastic optimization model and exports node-level outpu
 """
 function run_optimization_stochastic(
     df::DataFrame,
-    deterministic_cost_map::Dict,
     stochastic_bundle;
     initial_budget::Float64 = 150e6,
     seasonal_revenue::Float64 = 50e6,
@@ -1015,7 +1015,6 @@ function main()
             results = if exp_cfg.stochastic_config.enabled && !isnothing(stochastic_bundle)
                 run_optimization_stochastic(
                     df,
-                    cost_map,
                     stochastic_bundle,
                     initial_budget = exp_cfg.model_params.initial_budget,
                     seasonal_revenue = exp_cfg.model_params.seasonal_revenue,

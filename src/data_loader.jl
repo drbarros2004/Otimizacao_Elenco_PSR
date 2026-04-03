@@ -432,7 +432,6 @@ function generate_stochastic_projections(
 
     root_chemistry_multiplier = haskey(root_event_state, "chemistry_bonus") ? Float64(root_event_state["chemistry_bonus"]) : 1.0
     chemistry_multiplier_map[root_id] = root_chemistry_multiplier
-    root_node.metadata["chemistry_multiplier"] = root_chemistry_multiplier
 
     root_injury_ids = haskey(root_event_state, "forced_injury_ids") ? root_event_state["forced_injury_ids"] : Set{Int}()
     root_forced_sell_ids = haskey(root_event_state, "forced_sell_ids") ? root_event_state["forced_sell_ids"] : Set{Int}()
@@ -456,14 +455,7 @@ function generate_stochastic_projections(
         starter_allowed_map[(p_id, root_id)] = injured_root ? 0 : 1
         sell_allowed_map[(p_id, root_id)] = forced_sell_root ? 1 : (injured_root ? 0 : 1)
         forced_sell_node_map[(p_id, root_id)] = forced_sell_root ? 1 : 0
-        root_node.sell_allowed[p_id] = sell_allowed_map[(p_id, root_id)] == 1
-
-        if injured_root
-            push!(root_node.injury_players, p_id)
-        end
     end
-    root_node.metadata["injury_count"] = length(root_node.injury_players)
-    root_node.metadata["forced_sell_count"] = length(root_forced_sell_ids)
 
     stage_ids = sort(collect(keys(tree.nodes_by_stage)))
 
@@ -503,7 +495,6 @@ function generate_stochastic_projections(
                 chemistry_multiplier = Float64(event_state["chemistry_bonus"])
             end
             chemistry_multiplier_map[node_id] = chemistry_multiplier
-            node.metadata["chemistry_multiplier"] = chemistry_multiplier
 
             # Node-level market noise creates coherent branch movement across players.
             branch_market_shock = randn(rng) * value_sigma * 0.15
@@ -547,15 +538,7 @@ function generate_stochastic_projections(
                 starter_allowed_map[(p_id, node_id)] = injured_now ? 0 : 1
                 sell_allowed_map[(p_id, node_id)] = forced_sell_now ? 1 : (injured_now ? 0 : 1)
                 forced_sell_node_map[(p_id, node_id)] = forced_sell_now ? 1 : 0
-
-                if injured_now
-                    push!(node.injury_players, p_id)
-                end
-                node.sell_allowed[p_id] = sell_allowed_map[(p_id, node_id)] == 1
             end
-
-            node.metadata["injury_count"] = length(node.injury_players)
-            node.metadata["forced_sell_count"] = length(forced_sell_ids)
         end
     end
 
@@ -810,7 +793,8 @@ function export_node_analysis(
     cost_node_map::Dict,
     starter_allowed_map::Dict,
     sell_allowed_map::Dict,
-    forced_sell_node_map::Dict
+    forced_sell_node_map::Dict,
+    chemistry_multiplier_map::Dict
 )
     println("📊 Generating node-level audit report...")
 
@@ -832,7 +816,7 @@ function export_node_analysis(
                 cumulative_probability = node.cumulative_probability,
                 tactical_scheme = effective_scheme,
                 scenario_label = get(node.metadata, "manual_label", missing),
-                chemistry_multiplier = Float64(get(node.metadata, "chemistry_multiplier", 1.0)),
+                chemistry_multiplier = Float64(get(chemistry_multiplier_map, node_id, 1.0)),
                 ovr = ovr_node_map[(p_id, node_id)],
                 market_value_eur = round(value_node_map[(p_id, node_id)], digits=0),
                 acquisition_cost_eur = round(cost_node_map[(p_id, node_id)], digits=0),

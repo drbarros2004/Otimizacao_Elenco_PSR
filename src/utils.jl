@@ -21,9 +21,6 @@ struct ScenarioNode
     cumulative_probability::Float64
     tactical_scheme::String
     position_requirements::Dict{String, Int}
-    injury_players::Set{Int}
-    sell_allowed::Dict{Int, Bool}
-    chemistry_multiplier::Float64
     metadata::Dict{String, Any}
 end
 
@@ -109,9 +106,6 @@ function build_scenario_tree(
         1.0,
         root_scheme,
         deepcopy(formation_catalog[root_scheme]),
-        Set{Int}(),
-        Dict{Int, Bool}(),
-        1.0,
         Dict{String, Any}()
     )
 
@@ -150,9 +144,6 @@ function build_scenario_tree(
                     child_cum_prob,
                     scheme,
                     deepcopy(pos_requirements),
-                    Set{Int}(),
-                    Dict{Int, Bool}(),
-                    1.0,
                     Dict{String, Any}("child_index" => child_idx)
                 )
 

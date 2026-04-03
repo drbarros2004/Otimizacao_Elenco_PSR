@@ -16,9 +16,6 @@ using JuMP, Gurobi, DataFrames, CSV
 const S_MAX = 20.0         
 const S_INICIAL = 5.0      
 
-const BIG_M = 1000.0 # para que serve isso?
-
-const P_POSICAO = 1e6
 const P_SALARIO = 500.0
 const P_CAIXA = 3000.0
 
