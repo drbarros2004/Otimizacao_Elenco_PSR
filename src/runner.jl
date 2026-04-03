@@ -3,7 +3,10 @@ function run_pipeline(
     stochastic_config::Union{Nothing,StochasticConfig} = nothing,
     scenario_tree::Union{Nothing,ScenarioTree} = nothing,
     initial_squad_strategy::String = "top_value",
-    top_k_players_per_position::Union{Nothing, Int} = nothing
+    top_k_players_per_position::Union{Nothing, Int} = nothing,
+    domestic_nationalities::Vector{String} = ["Brazilian", "Brazil", "Brasil"],
+    unknown_nationality_is_foreign::Bool = true,
+    nationality_fallback_to_league::Bool = true
 )
     println("🚀 Starting PSR Squad Optimization Pipeline...")
     println("="^50)
@@ -30,7 +33,12 @@ function run_pipeline(
         println("🔎 Applied top-K filter by position (K=$(top_k_players_per_position)): $before_count -> $after_count players")
     end
 
-    is_foreign_map = build_is_foreign_map(df)
+    is_foreign_map = build_is_foreign_map(
+        df;
+        domestic_nationalities = domestic_nationalities,
+        unknown_is_foreign = unknown_nationality_is_foreign,
+        fallback_to_league = nationality_fallback_to_league,
+    )
 
     # STEP 2: Projections (Deterministic Logic)
     ovr_map, value_map, growth_potential_map = generate_projections(df, num_windows)
@@ -127,7 +135,10 @@ function run_optimization(df::DataFrame, ovr_map::Dict, value_map::Dict, cost_ma
                           initial_squad_strategy::String = "top_value",
                           num_windows::Int = 4,
                           model_params_override::Union{Nothing,ModelParameters} = nothing,
-                          is_foreign_map_override::Union{Nothing,Dict{Int,Bool}} = nothing)
+                          is_foreign_map_override::Union{Nothing,Dict{Int,Bool}} = nothing,
+                          domestic_nationalities::Vector{String} = ["Brazilian", "Brazil", "Brasil"],
+                          unknown_nationality_is_foreign::Bool = true,
+                          nationality_fallback_to_league::Bool = true)
 
     println("\n" * "="^60)
     println("⚽ SQUAD OPTIMIZATION MODULE")
@@ -183,7 +194,12 @@ function run_optimization(df::DataFrame, ovr_map::Dict, value_map::Dict, cost_ma
     # -------------------------------------------------------------------------
     println("\n📊 Preparing optimization data...")
 
-    is_foreign_map = isnothing(is_foreign_map_override) ? build_is_foreign_map(df) : is_foreign_map_override
+    is_foreign_map = isnothing(is_foreign_map_override) ? build_is_foreign_map(
+        df;
+        domestic_nationalities = domestic_nationalities,
+        unknown_is_foreign = unknown_nationality_is_foreign,
+        fallback_to_league = nationality_fallback_to_league,
+    ) : is_foreign_map_override
 
     model_data = ModelData(
         df,
@@ -232,7 +248,10 @@ function run_optimization_stochastic(
     seasonal_revenue::Float64 = 50e6,
     initial_squad_strategy::String = "top_value",
     model_params_override::Union{Nothing,ModelParameters} = nothing,
-    is_foreign_map_override::Union{Nothing,Dict{Int,Bool}} = nothing
+    is_foreign_map_override::Union{Nothing,Dict{Int,Bool}} = nothing,
+    domestic_nationalities::Vector{String} = ["Brazilian", "Brazil", "Brasil"],
+    unknown_nationality_is_foreign::Bool = true,
+    nationality_fallback_to_league::Bool = true
 )
     println("\n" * "="^60)
     println("🌳 STOCHASTIC SQUAD OPTIMIZATION MODULE")
@@ -284,7 +303,12 @@ function run_optimization_stochastic(
     elseif !isnothing(bundle_foreign_map)
         bundle_foreign_map
     else
-        build_is_foreign_map(df)
+        build_is_foreign_map(
+            df;
+            domestic_nationalities = domestic_nationalities,
+            unknown_is_foreign = unknown_nationality_is_foreign,
+            fallback_to_league = nationality_fallback_to_league,
+        )
     end
 
     println("\n📊 Preparing stochastic optimization data...")
@@ -418,6 +442,9 @@ function main()
         scenario_tree = exp_cfg.scenario_tree,
         initial_squad_strategy = exp_cfg.initial_squad_strategy,
         top_k_players_per_position = exp_cfg.top_k_players_per_position,
+        domestic_nationalities = exp_cfg.domestic_nationalities,
+        unknown_nationality_is_foreign = exp_cfg.unknown_nationality_is_foreign,
+        nationality_fallback_to_league = exp_cfg.nationality_fallback_to_league,
     )
 
     # Check if optimization dependencies are available

@@ -4,6 +4,9 @@ struct ExperimentConfig
     num_windows::Int
     top_k_players_per_position::Union{Nothing, Int}
     initial_squad_strategy::String
+    domestic_nationalities::Vector{String}
+    unknown_nationality_is_foreign::Bool
+    nationality_fallback_to_league::Bool
     model_params::ModelParameters
     stochastic_config::StochasticConfig
     scenario_tree::Union{Nothing, ScenarioTree}
@@ -474,7 +477,30 @@ function load_experiment_config(config_path::String=DEFAULT_EXPERIMENT_CONFIG_PA
     salary_cap_penalty = Float64(get(constraints_cfg, "salary_cap_penalty", P_SALARIO))
     foreign_limit = Int(get(constraints_cfg, "foreign_limit", 9))
     foreign_violation_penalty = Float64(get(constraints_cfg, "foreign_violation_penalty", 0.5))
+    raw_domestic_nationalities = get(constraints_cfg, "domestic_nationalities", Any["Brazilian", "Brazil", "Brasil"])
+    unknown_nationality_is_foreign = Bool(get(constraints_cfg, "unknown_nationality_is_foreign", true))
+    nationality_fallback_to_league = Bool(get(constraints_cfg, "nationality_fallback_to_league", true))
     squad_position_penalty = Float64(get(constraints_cfg, "squad_position_penalty", 0.0))
+
+    domestic_nationalities = String[]
+    if raw_domestic_nationalities isa AbstractVector
+        for item in raw_domestic_nationalities
+            token = strip(String(item))
+            if !isempty(token)
+                push!(domestic_nationalities, token)
+            end
+        end
+    else
+        token = strip(String(raw_domestic_nationalities))
+        if !isempty(token)
+            push!(domestic_nationalities, token)
+        end
+    end
+
+    if isempty(domestic_nationalities)
+        error("constraints.domestic_nationalities must define at least one non-empty value.")
+    end
+
     if min_squad_size > max_squad_size
         error("constraints.min_squad_size cannot be greater than constraints.max_squad_size.")
     end
@@ -556,6 +582,7 @@ function load_experiment_config(config_path::String=DEFAULT_EXPERIMENT_CONFIG_PA
     println("   Budget: €$(round(initial_budget/1e6, digits=1))M | Seasonal revenue: €$(round(seasonal_revenue/1e6, digits=1))M")
     println("   Salary cap multiplier (initial payroll): x$(round(salary_cap_multiplier_initial, digits=2)) | penalty: $(round(salary_cap_penalty, digits=1))")
     println("   Foreign-player rule: limit $(foreign_limit) | soft excess penalty $(round(foreign_violation_penalty, digits=3))")
+    println("   Domestic nationalities: $(domestic_nationalities) | unknown->foreign: $(unknown_nationality_is_foreign) | league fallback: $(nationality_fallback_to_league)")
     println("   Squad position penalty: $(round(squad_position_penalty, digits=1)) | Bench targets: $(bench_targets)")
 
     if stochastic_config.enabled && !isnothing(scenario_tree)
@@ -572,6 +599,9 @@ function load_experiment_config(config_path::String=DEFAULT_EXPERIMENT_CONFIG_PA
         num_windows,
         top_k_players_per_position,
         initial_squad_strategy,
+        domestic_nationalities,
+        unknown_nationality_is_foreign,
+        nationality_fallback_to_league,
         model_params,
         stochastic_config,
         scenario_tree

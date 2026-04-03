@@ -9,7 +9,7 @@ const PROCESSED_OUTPUT_PATH = "data/processed/processed_player_data.csv"
 const SCRAPER_COLUMNS = [
     :player_id, :name, :dob, :positions, :overall_rating,
     :potential, :value, :wage, :international_reputation,
-    :club_name, :club_league_name, :country_name
+    :club_name, :club_league_name, :country_name, :description
 ]
 
 """
@@ -39,6 +39,36 @@ function map_position_group(position_string::AbstractString)
         @warn "Unknown position: $primary_pos. Defaulting to CM."
         return "CM"
     end
+end
+
+function _normalize_nationality_token(value)::String
+    token = lowercase(strip(String(value)))
+    return replace(token, r"\s+" => " ")
+end
+
+"""
+    extract_nationality_from_description(description_text) -> Union{Nothing, String}
+
+Extracts nationality from SoFIFA prose such as:
+"... is a Brazilian footballer ..." or "... is an Argentine footballer ..."
+"""
+function extract_nationality_from_description(description_text)::Union{Nothing, String}
+    if ismissing(description_text)
+        return nothing
+    end
+
+    text = strip(String(description_text))
+    if isempty(text)
+        return nothing
+    end
+
+    match_obj = match(r"(?i)\bis an? ([\p{L}][\p{L} .'-]*?) footballer\b", text)
+    if isnothing(match_obj)
+        return nothing
+    end
+
+    nationality = strip(String(match_obj.captures[1]))
+    return isempty(nationality) ? nothing : nationality
 end
 
 """
@@ -161,48 +191,88 @@ function filter_top_k_players_by_position(
 end
 
 """
-    build_is_foreign_map(df_players::DataFrame)
+    build_is_foreign_map(df_players::DataFrame; ...)
 
-Builds a player-level map where `true` means the player is foreign (`country_name != Brazil`).
-If `country_name` is missing, a conservative fallback is used:
-- `club_league_name` containing "brazil" or "brasileir" => Brazilian (false)
-- otherwise => foreign (true)
+Builds a player-level map where `true` means foreign and `false` means domestic.
+Priority order:
+1) nationality extracted from `description` using pattern "<NATIONALITY> footballer"
+2) `country_name`
+3) optional league fallback (`club_league_name` containing brazil/brasileir)
+4) unknown fallback controlled by `unknown_is_foreign`
 """
-function build_is_foreign_map(df_players::DataFrame)
+function build_is_foreign_map(
+    df_players::DataFrame;
+    domestic_nationalities::Vector{String} = String["Brazilian", "Brazil", "Brasil"],
+    unknown_is_foreign::Bool = true,
+    fallback_to_league::Bool = true,
+)
     cols = Set(Symbol.(names(df_players)))
     if !(:player_id in cols)
         error("Cannot build is_foreign_map: missing required column 'player_id'.")
     end
 
+    if isempty(domestic_nationalities)
+        error("Cannot build is_foreign_map: domestic_nationalities cannot be empty.")
+    end
+
     has_country = :country_name in cols
+    has_description = :description in cols
     has_league = :club_league_name in cols
+
+    domestic_norm = Set{String}()
+    for item in domestic_nationalities
+        token = _normalize_nationality_token(item)
+        if !isempty(token)
+            push!(domestic_norm, token)
+        end
+    end
+
+    if isempty(domestic_norm)
+        error("Cannot build is_foreign_map: domestic_nationalities contains only empty values.")
+    end
 
     is_foreign_map = Dict{Int, Bool}()
 
     for row in eachrow(df_players)
         player_id = Int(row.player_id)
 
-        country_norm = ""
-        if has_country && !ismissing(row.country_name)
-            country_norm = lowercase(strip(String(row.country_name)))
+        parsed_nationality_norm = ""
+        if has_description
+            parsed_nationality = extract_nationality_from_description(row.description)
+            if !isnothing(parsed_nationality)
+                parsed_nationality_norm = _normalize_nationality_token(parsed_nationality)
+            end
         end
 
-        if !isempty(country_norm)
-            is_brazilian_country = (country_norm == "brazil") || (country_norm == "brasil")
-            is_foreign_map[player_id] = !is_brazilian_country
+        if !isempty(parsed_nationality_norm)
+            is_foreign_map[player_id] = !(parsed_nationality_norm in domestic_norm)
             continue
         end
 
-        league_norm = ""
-        if has_league && !ismissing(row.club_league_name)
-            league_norm = lowercase(strip(String(row.club_league_name)))
+        country_norm = ""
+        if has_country && !ismissing(row.country_name)
+            country_norm = _normalize_nationality_token(row.country_name)
         end
 
-        is_brazilian_league = !isempty(league_norm) && (
-            occursin("brazil", league_norm) || occursin("brasileir", league_norm)
-        )
+        if !isempty(country_norm)
+            is_foreign_map[player_id] = !(country_norm in domestic_norm)
+            continue
+        end
 
-        is_foreign_map[player_id] = !is_brazilian_league
+        if fallback_to_league && has_league
+            league_norm = ""
+            if !ismissing(row.club_league_name)
+                league_norm = _normalize_nationality_token(row.club_league_name)
+            end
+
+            is_domestic_league = !isempty(league_norm) && (
+                occursin("brazil", league_norm) || occursin("brasileir", league_norm)
+            )
+
+            is_foreign_map[player_id] = !is_domestic_league
+        else
+            is_foreign_map[player_id] = unknown_is_foreign
+        end
     end
 
     return is_foreign_map
