@@ -3,16 +3,17 @@ import streamlit as st
 
 from dashboard_logic import (
     _build_sibling_choices,
-    _compute_node_payroll_eur,
-    _compute_profile_scale_bounds,
     _estimate_salary_cap_eur,
     _get_sibling_node_ids,
     _prepare_tree_meta,
     _with_display_best_xi,
     _with_post_decision_squad,
     enrich_with_evolution,
+    get_radar_scale_bounds,
     load_data,
-    summarize_window_finance,
+    load_compliance_data,
+    summarize_compliance_for_selection,
+    summarize_financial_before_after,
 )
 from dashboard_visuals import (
     _build_node_label,
@@ -22,12 +23,13 @@ from dashboard_visuals import (
     build_sibling_diff_table,
     build_squad_profile_radar,
     build_window_tables,
+    render_compliance_panel,
+    render_finance_snapshot_cards,
     render_financial_metrics,
     render_main_metrics,
     render_sibling_diff,
     render_sold_players_table,
     render_starters_and_reserves,
-    render_tactical_constraint_table,
 )
 
 
@@ -40,6 +42,20 @@ def main() -> None:
         index=0,
     )
     preferred_mode = mode_label.lower()
+    radar_scale_mode = st.sidebar.selectbox(
+        "Radar Scale",
+        options=["Auto (Stage-adaptive)", "Manual (Fixed Limits)"],
+        index=0,
+        help="Manual mode uses MANUAL_RADAR_LIMITS in dashboard_logic.py.",
+    )
+    radar_scale_mode_key = "manual" if radar_scale_mode.startswith("Manual") else "auto"
+    main_layout_mode = st.sidebar.selectbox(
+        "Main Block Layout",
+        options=["Adaptive Grid", "Stacked"],
+        index=0,
+        help="Use Stacked mode on smaller screens.",
+    )
+    main_layout_mode_key = "stacked" if main_layout_mode.startswith("Stacked") else "grid"
 
     try:
         decisions, budget, formation, tree_meta, is_stochastic, selected_mode = load_data(preferred_mode)
@@ -51,6 +67,7 @@ def main() -> None:
     st.title("Squad Interactive Field")
     st.caption("Interactive pitch view with starters, reserves, finance balance, and OVR evolution per window.")
     st.sidebar.caption(f"Active dataset: {selected_mode}")
+    compliance_df = load_compliance_data(selected_mode)
 
     decisions = enrich_with_evolution(decisions, tree_meta)
     prepared_tree_meta = _prepare_tree_meta(tree_meta) if is_stochastic else pd.DataFrame()
@@ -156,12 +173,21 @@ def main() -> None:
     else:
         scheme = "N/A"
 
-    finance = summarize_window_finance(window_df, budget, selected_window, selected_node)
+    finance = summarize_financial_before_after(window_df, budget, selected_window, selected_node)
     sold_mask = pd.to_numeric(window_df.get("sold", 0), errors="coerce").fillna(0).astype(int) == 1
     sold_players_df = window_df[sold_mask].copy()
-    current_payroll_eur = _compute_node_payroll_eur(window_df, squad_col="in_squad")
+    current_payroll_eur = float(finance.get("payroll_after_eur", 0.0))
     salary_cap_eur = _estimate_salary_cap_eur(decisions, is_stochastic)
     selected_sibling_node: int | None = None
+
+    compliance_detail_df, compliance_summary_df = summarize_compliance_for_selection(
+        compliance_df,
+        selected_window,
+        selected_node if is_stochastic else None,
+    )
+    if not compliance_summary_df.empty:
+        violations_count = int(compliance_summary_df["violations"].sum())
+        st.sidebar.caption(f"Compliance violations (selection): {violations_count}")
 
     show_tree_sidebar = (
         is_stochastic
@@ -170,15 +196,35 @@ def main() -> None:
         and {"node_id", "parent_id", "stage"}.issubset(prepared_tree_meta.columns)
     )
 
+    def _render_tree_panel(tree_fig: object, tree_key: str) -> None:
+        try:
+            st.plotly_chart(
+                tree_fig,
+                use_container_width=True,
+                key=tree_key,
+                on_select="rerun",
+                selection_mode="points",
+            )
+            clicked_node = _extract_clicked_node(st.session_state.get(tree_key))
+            if clicked_node is not None and clicked_node != selected_node:
+                clicked_meta = prepared_tree_meta[prepared_tree_meta["node_id"] == int(clicked_node)]
+                if not clicked_meta.empty:
+                    clicked_stage = int(clicked_meta.iloc[0]["stage"])
+                    if clicked_stage in windows:
+                        st.session_state[pending_window_key] = clicked_stage
+                    st.session_state[pending_node_key] = int(clicked_node)
+                else:
+                    st.session_state[pending_node_key] = int(clicked_node)
+                st.rerun()
+        except TypeError:
+            st.plotly_chart(tree_fig, use_container_width=True)
+
     if show_tree_sidebar:
-        main_col, side_col = st.columns([3.0, 2.2], gap="large")
-
-        with main_col:
+        if main_layout_mode_key == "stacked":
             pitch_fig = build_pitch_figure(window_df, selected_window, scheme)
-            st.plotly_chart(pitch_fig, width="stretch")
+            st.plotly_chart(pitch_fig, use_container_width=True)
 
-        with side_col:
-            mini_tree_height = int(760 * 0.56)
+            mini_tree_height = 420
             tree_fig = build_scenario_tree_figure(
                 prepared_tree_meta,
                 selected_node,
@@ -186,35 +232,36 @@ def main() -> None:
                 mini_mode=True,
                 mini_height=mini_tree_height,
             )
-            tree_key = "scenario_tree_minimap"
+            _render_tree_panel(tree_fig, "scenario_tree_minimap_stacked")
 
-            try:
-                st.plotly_chart(
-                    tree_fig,
-                    width="stretch",
-                    key=tree_key,
-                    on_select="rerun",
-                    selection_mode="points",
-                )
-                clicked_node = _extract_clicked_node(st.session_state.get(tree_key))
-                if clicked_node is not None and clicked_node != selected_node:
-                    clicked_meta = prepared_tree_meta[prepared_tree_meta["node_id"] == int(clicked_node)]
-                    if not clicked_meta.empty:
-                        clicked_stage = int(clicked_meta.iloc[0]["stage"])
-                        if clicked_stage in windows:
-                            st.session_state[pending_window_key] = clicked_stage
-                        st.session_state[pending_node_key] = int(clicked_node)
-                    else:
-                        st.session_state[pending_node_key] = int(clicked_node)
-                    st.rerun()
-            except TypeError:
-                st.plotly_chart(tree_fig, width="stretch")
-
-            col_saidas, col_financas = st.columns([1, 1], gap="medium")
-            with col_saidas:
-                render_sold_players_table(sold_players_df)
-            with col_financas:
+            tab_finance, tab_sales = st.tabs(["Status Financeiro", "Saidas do Elenco"])
+            with tab_finance:
                 render_financial_metrics(finance, current_payroll_eur, salary_cap_eur)
+            with tab_sales:
+                render_sold_players_table(sold_players_df)
+        else:
+            main_col, side_col = st.columns([2.6, 1.7], gap="medium")
+
+            with main_col:
+                pitch_fig = build_pitch_figure(window_df, selected_window, scheme)
+                st.plotly_chart(pitch_fig, use_container_width=True)
+
+            with side_col:
+                mini_tree_height = int(760 * 0.56)
+                tree_fig = build_scenario_tree_figure(
+                    prepared_tree_meta,
+                    selected_node,
+                    selected_window,
+                    mini_mode=True,
+                    mini_height=mini_tree_height,
+                )
+                _render_tree_panel(tree_fig, "scenario_tree_minimap")
+
+                tab_finance, tab_sales = st.tabs(["Status Financeiro", "Saidas do Elenco"])
+                with tab_finance:
+                    render_financial_metrics(finance, current_payroll_eur, salary_cap_eur)
+                with tab_sales:
+                    render_sold_players_table(sold_players_df)
 
         sibling_ids = _get_sibling_node_ids(prepared_tree_meta, selected_node)
         sibling_options: list[str] = []
@@ -269,11 +316,12 @@ def main() -> None:
                     if not stage_meta.empty and "node_id" in stage_meta.columns
                     else [selected_node] + sibling_ids
                 )
-                scale_bounds = _compute_profile_scale_bounds(
+                scale_bounds = get_radar_scale_bounds(
                     decisions,
                     formation,
                     selected_window,
                     scale_node_ids,
+                    mode=radar_scale_mode_key,
                 )
 
                 radar_fig, radar_tbl = build_squad_profile_radar(
@@ -284,14 +332,18 @@ def main() -> None:
                     chart_height=320,
                     scale_bounds=scale_bounds,
                 )
-                st.plotly_chart(radar_fig, width="stretch")
+                st.plotly_chart(radar_fig, use_container_width=True)
                 st.caption("Escala normalizada de 0 a 100 por métrica; tabela com valores absolutos.")
+                if radar_scale_mode_key == "manual":
+                    st.caption("Escala fixa do radar ativa. Edite MANUAL_RADAR_LIMITS em dashboard_logic.py para ajustar.")
                 st.dataframe(radar_tbl, width="stretch", hide_index=True)
             else:
                 st.info("Selecione um nó irmão para exibir o radar comparativo.")
     else:
         pitch_fig = build_pitch_figure(window_df, selected_window, scheme)
-        st.plotly_chart(pitch_fig, width="stretch")
+        st.plotly_chart(pitch_fig, use_container_width=True)
+
+    render_finance_snapshot_cards(finance, salary_cap_eur)
 
     scheme_label = scheme if selected_node is None else f"{scheme} | Node {selected_node}"
     render_main_metrics(scheme_label, finance)
@@ -329,7 +381,33 @@ def main() -> None:
 
     starters_tbl, reserves_tbl = build_window_tables(window_df)
     render_starters_and_reserves(starters_tbl, reserves_tbl)
-    render_tactical_constraint_table(form_window)
+
+    compliance_node = selected_node if is_stochastic else None
+    if is_stochastic and not stage_meta.empty and "node_id" in stage_meta.columns:
+        compliance_node_ids = stage_meta["node_id"].dropna().astype(int).tolist()
+        if compliance_node_ids:
+            compliance_state_key = f"compliance_node_stage_{selected_window}"
+            default_node = int(selected_node) if selected_node in compliance_node_ids else compliance_node_ids[0]
+            if compliance_state_key not in st.session_state or int(st.session_state[compliance_state_key]) not in compliance_node_ids:
+                st.session_state[compliance_state_key] = default_node
+
+            selected_compliance_idx = max(0, compliance_node_ids.index(int(st.session_state[compliance_state_key])))
+            compliance_node = int(
+                st.selectbox(
+                    "Compliance Node",
+                    options=compliance_node_ids,
+                    index=selected_compliance_idx,
+                    key=f"compliance_node_select_{selected_window}",
+                )
+            )
+            st.session_state[compliance_state_key] = compliance_node
+
+    compliance_detail_panel, compliance_summary_panel = summarize_compliance_for_selection(
+        compliance_df,
+        selected_window,
+        compliance_node if is_stochastic else None,
+    )
+    render_compliance_panel(compliance_summary_panel, compliance_detail_panel)
 
     st.markdown("---")
     st.code("streamlit run analysis/streamlit_dashboard.py", language="bash")

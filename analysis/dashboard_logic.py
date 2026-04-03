@@ -14,6 +14,8 @@ SQUAD_DECISIONS_NODES_PATH = OUTPUT_DIR / "squad_decisions_nodes.csv"
 BUDGET_EVOLUTION_NODES_PATH = OUTPUT_DIR / "budget_evolution_nodes.csv"
 FORMATION_DIAGNOSTICS_NODES_PATH = OUTPUT_DIR / "formation_diagnostics_nodes.csv"
 TREE_METADATA_PATH = OUTPUT_DIR / "tree_metadata.csv"
+COMPLIANCE_RESULTS_PATH = OUTPUT_DIR / "compliance_results.csv"
+COMPLIANCE_RESULTS_NODES_PATH = OUTPUT_DIR / "compliance_results_nodes.csv"
 PLAYER_NODE_AUDIT_PATH = ROOT / "data" / "processed" / "player_node_audit.csv"
 PROCESSED_PLAYER_DATA_PATH = ROOT / "data" / "processed" / "processed_player_data.csv"
 EXPERIMENT_CONFIG_PATH = ROOT / "config" / "experiment.toml"
@@ -77,6 +79,16 @@ FORMATION_POSITION_COORDS = {
         "RW": [(84, 64)],
         "ST": [(40, 88), (60, 80)],
     },
+}
+
+# Hand-picked radar limits used when scale mode is set to manual.
+# Keep these values explicit for easy editing during slide preparation.
+MANUAL_RADAR_LIMITS: dict[str, tuple[float, float]] = {
+    "Média de OVR": (65.0, 90.0),
+    "Potencial de Revenda": (50e6, 250e6),
+    "Idade Média": (20.0, 36.0),
+    "Entrosamento Total": (6.0, 11.0),
+    "Custo Salarial": (200e3, 900e3),
 }
 
 
@@ -718,6 +730,135 @@ def summarize_window_finance(window_df: pd.DataFrame, budget_df: pd.DataFrame, w
     }
 
 
+def summarize_financial_before_after(
+    window_df: pd.DataFrame,
+    budget_df: pd.DataFrame,
+    window: int,
+    node_id: int | None = None,
+) -> dict:
+    finance = summarize_window_finance(window_df, budget_df, window, node_id)
+
+    budget_before_eur = float(finance.get("cash", 0.0))
+    spent_eur = float(finance.get("spent", 0.0))
+    sold_eur = float(finance.get("sold", 0.0))
+    budget_after_eur = budget_before_eur - spent_eur + sold_eur
+
+    payroll_before_eur = _compute_node_payroll_eur(window_df, squad_col="in_squad")
+    payroll_after_eur = _compute_node_payroll_eur(window_df, squad_col="in_squad_display")
+
+    out = dict(finance)
+    out.update(
+        {
+            "budget_before_eur": budget_before_eur,
+            "budget_after_eur": budget_after_eur,
+            "budget_delta_eur": budget_after_eur - budget_before_eur,
+            "payroll_before_eur": payroll_before_eur,
+            "payroll_after_eur": payroll_after_eur,
+            "payroll_delta_eur": payroll_after_eur - payroll_before_eur,
+        }
+    )
+    return out
+
+
+@st.cache_data(show_spinner=False)
+def load_compliance_data(selected_mode: str) -> pd.DataFrame:
+    mode = str(selected_mode).strip().lower()
+    path = COMPLIANCE_RESULTS_PATH if mode == "deterministic" else COMPLIANCE_RESULTS_NODES_PATH
+    if not path.exists():
+        return pd.DataFrame()
+
+    try:
+        df = pd.read_csv(path)
+    except Exception:
+        return pd.DataFrame()
+
+    if "stage" in df.columns and "window" not in df.columns:
+        df = df.rename(columns={"stage": "window"})
+
+    for col in ["window", "node_id", "parent_id", "cumulative_probability", "slack_value"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    if "constraint_name" not in df.columns:
+        df["constraint_name"] = "unknown"
+    df["constraint_name"] = df["constraint_name"].fillna("unknown").astype(str).str.strip()
+    df.loc[df["constraint_name"] == "", "constraint_name"] = "unknown"
+
+    if "pos_group" not in df.columns:
+        df["pos_group"] = pd.NA
+
+    slack_values = pd.to_numeric(df.get("slack_value", 0.0), errors="coerce").fillna(0.0)
+    if "is_violated" in df.columns:
+        parsed = df["is_violated"].apply(_coerce_bool_or_none)
+        df["is_violated"] = parsed.where(parsed.notna(), slack_values > 1e-8).astype(bool)
+    else:
+        df["is_violated"] = slack_values > 1e-8
+
+    if "constraint_modeled" in df.columns:
+        modeled = df["constraint_modeled"].apply(_coerce_bool_or_none)
+        df["constraint_modeled"] = modeled.fillna(True).astype(bool)
+    else:
+        df["constraint_modeled"] = True
+
+    df["slack_value"] = slack_values
+    return df
+
+
+def summarize_compliance_for_selection(
+    compliance_df: pd.DataFrame,
+    window: int,
+    node_id: int | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    detail_cols = ["constraint_name", "pos_group", "slack_value", "is_violated", "constraint_modeled"]
+    summary_cols = ["constraint_name", "total_rows", "violations", "max_slack", "total_slack"]
+
+    if compliance_df is None or compliance_df.empty:
+        return pd.DataFrame(columns=detail_cols), pd.DataFrame(columns=summary_cols)
+
+    df = compliance_df.copy()
+    if "window" in df.columns:
+        df["window"] = pd.to_numeric(df["window"], errors="coerce")
+        df = df[df["window"] == int(window)]
+
+    if node_id is not None and "node_id" in df.columns:
+        df["node_id"] = pd.to_numeric(df["node_id"], errors="coerce")
+        df = df[df["node_id"] == int(node_id)]
+
+    if df.empty:
+        return pd.DataFrame(columns=detail_cols), pd.DataFrame(columns=summary_cols)
+
+    df["slack_value"] = pd.to_numeric(df.get("slack_value", 0.0), errors="coerce").fillna(0.0)
+    if "is_violated" not in df.columns:
+        df["is_violated"] = df["slack_value"] > 1e-8
+    else:
+        parsed = df["is_violated"].apply(_coerce_bool_or_none)
+        df["is_violated"] = parsed.where(parsed.notna(), df["slack_value"] > 1e-8).astype(bool)
+
+    if "constraint_modeled" not in df.columns:
+        df["constraint_modeled"] = True
+    else:
+        modeled = df["constraint_modeled"].apply(_coerce_bool_or_none)
+        df["constraint_modeled"] = modeled.fillna(True).astype(bool)
+
+    detail = df[detail_cols].copy()
+    detail = detail.sort_values(by=["is_violated", "constraint_name", "pos_group"], ascending=[False, True, True], na_position="last")
+
+    summary = (
+        df.groupby("constraint_name", dropna=False)
+        .agg(
+            total_rows=("constraint_name", "size"),
+            violations=("is_violated", "sum"),
+            max_slack=("slack_value", "max"),
+            total_slack=("slack_value", "sum"),
+        )
+        .reset_index()
+    )
+    summary["violations"] = pd.to_numeric(summary["violations"], errors="coerce").fillna(0).astype(int)
+    summary = summary.sort_values(by=["violations", "max_slack", "constraint_name"], ascending=[False, False, True])
+
+    return detail, summary[summary_cols]
+
+
 def _prepare_tree_meta(tree_meta: pd.DataFrame) -> pd.DataFrame:
     if tree_meta is None or tree_meta.empty:
         return pd.DataFrame()
@@ -926,3 +1067,44 @@ def _compute_profile_scale_bounds(
         bounds[metric] = (min(values), max(values))
 
     return bounds
+
+
+def _sanitize_scale_bounds(raw_bounds: dict[str, tuple[float, float]] | None) -> dict[str, tuple[float, float]]:
+    if raw_bounds is None:
+        return {}
+
+    clean: dict[str, tuple[float, float]] = {}
+    for metric, bounds in raw_bounds.items():
+        if bounds is None:
+            continue
+        try:
+            lo = float(bounds[0])
+            hi = float(bounds[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if pd.isna(lo) or pd.isna(hi) or hi <= lo:
+            continue
+        clean[str(metric)] = (lo, hi)
+    return clean
+
+
+def get_radar_scale_bounds(
+    decisions: pd.DataFrame,
+    formation: pd.DataFrame,
+    window: int,
+    node_ids: list[int],
+    mode: str = "auto",
+    manual_limits: dict[str, tuple[float, float]] | None = None,
+) -> dict[str, tuple[float, float]]:
+    mode_norm = str(mode).strip().lower()
+    manual_bounds = _sanitize_scale_bounds(MANUAL_RADAR_LIMITS if manual_limits is None else manual_limits)
+
+    if mode_norm == "manual":
+        return manual_bounds
+
+    auto_bounds = _sanitize_scale_bounds(
+        _compute_profile_scale_bounds(decisions, formation, window, node_ids)
+    )
+    if auto_bounds:
+        return auto_bounds
+    return manual_bounds

@@ -108,6 +108,14 @@ def _root_inherited_badge(row: pd.Series) -> str:
     return ""
 
 
+def _signed_millions(value: float) -> str:
+    return f"{value / 1e6:+,.1f}M"
+
+
+def _signed_thousands(value: float) -> str:
+    return f"{value / 1e3:+,.1f}K"
+
+
 def build_pitch_figure(window_df: pd.DataFrame, selected_window: int, formation_scheme: str | None = None) -> go.Figure:
     squad_col = "in_squad_display" if "in_squad_display" in window_df.columns else "in_squad"
     squad = window_df[window_df[squad_col] == 1].copy()
@@ -307,12 +315,12 @@ def build_pitch_figure(window_df: pd.DataFrame, selected_window: int, formation_
 
     fig.update_layout(
         title=f"Squad Field View - Window {selected_window}",
-        width=1650,
+        width=None,
         height=PITCH_FIG_HEIGHT,
         margin=dict(l=20, r=20, t=60, b=20),
-        plot_bgcolor="#2B2B2B",
-        paper_bgcolor="#2B2B2B",
-        font=dict(color="white"),
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#1F2937"),
         xaxis=dict(
             range=[-2, PLOT_X_MAX],
             showgrid=False,
@@ -334,7 +342,7 @@ def build_pitch_figure(window_df: pd.DataFrame, selected_window: int, formation_
         ),
         shapes=shapes,
         annotations=[
-            dict(x=(RESERVE_PANEL_X0 + 2), y=103, text="<b>RESERVES</b>", showarrow=False, font=dict(size=14, color="white"), xanchor="left"),
+            dict(x=(RESERVE_PANEL_X0 + 2), y=103, text="<b>RESERVES</b>", showarrow=False, font=dict(size=14, color="#111827"), xanchor="left"),
         ],
     )
 
@@ -591,16 +599,16 @@ def build_scenario_tree_figure(
         width=None if mini_mode else max(950, 240 * max(1, len(stage_order))),
         height=mini_height if (mini_mode and mini_height is not None) else (max(240, 100 + 18 * max(1, len([nid for nid in y_coords if nid in df["node_id"].tolist()]))) if mini_mode else max(280, 120 + 32 * max(1, len([nid for nid in y_coords if nid in df["node_id"].tolist()])))),
         margin=dict(l=20, r=20, t=55, b=20),
-        plot_bgcolor="#0F1720",
-        paper_bgcolor="#0F1720",
-        font=dict(color="white"),
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#1F2937"),
         xaxis=dict(
             title="Decision Stage",
             tickmode="array",
             tickvals=stage_ticks,
             ticktext=stage_labels,
             showgrid=True,
-            gridcolor="#1F2A37",
+            gridcolor="#D1D5DB",
             zeroline=False,
             fixedrange=True,
         ),
@@ -804,14 +812,14 @@ def build_squad_profile_radar(
         title=f"Perfil do Elenco Titular: Nó {selected_node} vs Nó {sibling_node}",
         height=max(260, chart_height),
         margin=dict(l=12, r=12, t=50, b=12),
-        paper_bgcolor="#111821",
-        plot_bgcolor="#111821",
-        font=dict(color="white"),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#1F2937"),
         legend=dict(orientation="h", yanchor="bottom", y=1.03, xanchor="right", x=1.0),
         polar=dict(
-            bgcolor="#111821",
-            radialaxis=dict(visible=True, range=[0, 100], showticklabels=False, ticks="", gridcolor="#3D4A5A"),
-            angularaxis=dict(gridcolor="#2E3948"),
+            bgcolor="rgba(0,0,0,0)",
+            radialaxis=dict(visible=True, range=[0, 100], showticklabels=False, ticks="", gridcolor="#D1D5DB"),
+            angularaxis=dict(gridcolor="#D1D5DB"),
         ),
     )
 
@@ -854,17 +862,55 @@ def render_sold_players_table(sold_players_df: pd.DataFrame) -> None:
     st.dataframe(sold_table, width="stretch", hide_index=True)
 
 
+def render_finance_snapshot_cards(finance: dict, salary_cap_eur: float | None) -> None:
+    budget_before = float(finance.get("budget_before_eur", finance.get("cash", 0.0)))
+    budget_after = float(finance.get("budget_after_eur", budget_before))
+    budget_delta = float(finance.get("budget_delta_eur", budget_after - budget_before))
+
+    payroll_before = float(finance.get("payroll_before_eur", 0.0))
+    payroll_after = float(finance.get("payroll_after_eur", payroll_before))
+    payroll_delta = float(finance.get("payroll_delta_eur", payroll_after - payroll_before))
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Budget Before", _money_millions(budget_before))
+    c2.metric("Budget After", _money_millions(budget_after), delta=_signed_millions(budget_delta))
+    c3.metric("Payroll Before", _money_thousands(payroll_before))
+
+    if salary_cap_eur is None:
+        c4.metric("Payroll After", _money_thousands(payroll_after), delta=_signed_thousands(payroll_delta))
+    else:
+        cap_gap = payroll_after - float(salary_cap_eur)
+        c4.metric(
+            "Payroll After",
+            _money_thousands(payroll_after),
+            delta=f"{_signed_thousands(cap_gap)} vs cap",
+            delta_color="inverse",
+        )
+        c4.caption(f"Cap: {_money_thousands(float(salary_cap_eur))}")
+
+
 def render_financial_metrics(finance: dict, current_payroll_eur: float, salary_cap_eur: float | None) -> None:
     st.subheader("Status Financeiro")
-    st.metric("Orçamento de Transferência", _money_millions(finance["cash"]))
+
+    budget_before = float(finance.get("budget_before_eur", finance.get("cash", 0.0)))
+    budget_after = float(finance.get("budget_after_eur", budget_before))
+    payroll_before = float(finance.get("payroll_before_eur", current_payroll_eur))
+    payroll_after = float(finance.get("payroll_after_eur", current_payroll_eur))
+
+    st.metric("Orçamento (Antes)", _money_millions(budget_before))
+    st.metric("Orçamento (Depois)", _money_millions(budget_after), delta=_signed_millions(budget_after - budget_before))
+
     if salary_cap_eur is None:
-        st.metric("Folha Salarial", _money_thousands(current_payroll_eur))
+        st.metric("Folha (Antes)", _money_thousands(payroll_before))
+        st.metric("Folha (Depois)", _money_thousands(payroll_after), delta=_signed_thousands(payroll_after - payroll_before))
     else:
-        salary_slack_eur = salary_cap_eur - current_payroll_eur
+        salary_gap = payroll_after - float(salary_cap_eur)
+        st.metric("Folha (Antes)", _money_thousands(payroll_before))
         st.metric(
-            "Folha Salarial",
-            _money_thousands(current_payroll_eur),
-            delta=f"{_money_thousands(salary_slack_eur)} vs teto",
+            "Folha (Depois)",
+            _money_thousands(payroll_after),
+            delta=f"{_signed_thousands(salary_gap)} vs cap",
+            delta_color="inverse",
         )
 
 
@@ -903,3 +949,36 @@ def render_tactical_constraint_table(form_window: pd.DataFrame) -> None:
         )
     else:
         st.info("No tactical diagnostics found for this window.")
+
+
+def render_compliance_panel(summary_df: pd.DataFrame, detail_df: pd.DataFrame) -> None:
+    st.subheader("Soft Constraints & Compliance")
+    if summary_df is None or summary_df.empty:
+        st.info("No compliance rows found for this selection.")
+        return
+
+    overview = summary_df.copy()
+    overview["max_slack"] = pd.to_numeric(overview["max_slack"], errors="coerce").fillna(0.0)
+    overview["total_slack"] = pd.to_numeric(overview["total_slack"], errors="coerce").fillna(0.0)
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Rules", f"{int(len(overview))}")
+    c2.metric("Violations", f"{int(pd.to_numeric(overview['violations'], errors='coerce').fillna(0).sum())}")
+    c3.metric("Max Slack", f"{float(overview['max_slack'].max()):.3f}")
+
+    st.dataframe(overview, width="stretch", hide_index=True)
+
+    if detail_df is None or detail_df.empty:
+        return
+
+    detail = detail_df.copy()
+    detail["slack_value"] = pd.to_numeric(detail["slack_value"], errors="coerce").fillna(0.0)
+    detail = detail.sort_values(by=["is_violated", "constraint_name", "pos_group"], ascending=[False, True, True], na_position="last")
+
+    def _style_violation_row(row: pd.Series) -> list[str]:
+        violated = bool(row.get("is_violated", False))
+        if violated:
+            return ["background-color: #FDECEC; color: #A61E1E; font-weight: 600;"] * len(row)
+        return [""] * len(row)
+
+    st.dataframe(detail.style.apply(_style_violation_row, axis=1), width="stretch", hide_index=True)
