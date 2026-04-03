@@ -89,7 +89,7 @@ struct ModelParameters
         seasonal_revenue::Float64 = 50e6,
         max_squad_size::Int = 30,
         min_squad_size::Int = 18,
-        friction_penalty::Float64 = 0,
+        friction_penalty::Float64 = 0.0,
         transaction_cost_buy::Float64 = 0.12,
         transaction_cost_sell::Float64 = 0.10,
         signing_bonus_rate::Float64 = 0.5,
