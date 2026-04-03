@@ -47,7 +47,13 @@ A arquitetura do projeto é dividida em ingestão, processamento, otimização m
 │   ├── raw/                   # CSVs com atributos dos jogadores (ex: FIFA/EA FC)
 │   └── processed/             # Base tratada, idades corrigidas, posições
 ├── src/                       # Código-fonte Julia
-│   ├── data_loader.jl         # Pipeline de leitura e projeção técnica/financeira
+│   ├── data_loader.jl         # Ingestão/limpeza e mapeamento de posições
+│   ├── projections.jl         # Projeções e mapas econômicos (det/estocástico)
+│   ├── scenario_tree.jl       # Estruturas de cenários e árvore estocástica
+│   ├── player_dynamics.jl     # Idade e evolução técnica dos atletas
+│   ├── market_logic.jl        # Regras de mercado e salários inferidos
+│   ├── config_parser.jl       # Parser TOML e validação do experimento
+│   ├── runner.jl              # Orquestração de pipeline e execução
 │   ├── model*.jl              # Formulações MILP (estocástica e determinística)
 │   └── solver_engine.jl       # Instanciação do solver (Gurobi)
 ├── analysis/                  # Scripts e Dashboard Python
