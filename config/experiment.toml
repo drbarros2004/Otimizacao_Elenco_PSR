@@ -14,16 +14,15 @@ initial_squad_strategy = "team:Flamengo"
 [constraints]
 max_squad_size = 30
 min_squad_size = 18
-friction_penalty = 50.0 # estava em 10, agora está em -500 e não deu muita diferença. ver se isso é realmente necessário
+friction_penalty = 0.0 # estava em 10, agora está em -500 e não deu muita diferença. ver se isso é realmente necessário
 transaction_cost_buy = 0.15
 transaction_cost_sell = 0.12
 signing_bonus_rate = 0.5
 # Soft salary-cap controls based on initial squad payroll
 salary_cap_multiplier_initial = 1.0 # qual a diferença entre o multiplier e o window factor
-salary_cap_window_factor = 1.0
 salary_cap_penalty = 500.0
 
-squad_position_penalty = 500.0 # Penalidade suave (menor que o salário)
+squad_position_penalty = 40000.0 # Penalidade suave (menor que o salário)
 
 [bench_targets]
 GK = 2 # Dois goleiros reservas, logo 3 GKs no total no elenco
@@ -35,8 +34,8 @@ RW = 1
 LW = 1
 ST = 1
 
-[formation_catalog.433]
 # Exact starters by position for each tactical scheme
+[formation_catalog.433]
 GK = 1
 CB = 2
 RB = 1
@@ -56,20 +55,29 @@ RW = 1
 LW = 1
 ST = 2
 
+[formation_catalog.532]
+GK = 1
+CB = 3
+RB = 1
+LB = 1
+CM = 3
+RW = 0
+LW = 0
+ST = 2
+
 [formation_plan]
 # Accepted keys: 0|w0|window_0 (window index starts at 0)
 window_0 = "433"
 window_1 = "433"
 window_2 = "442"
 window_3 = "442"
-# window_4 = "442"
 
 [objective]
-weight_quality = 0.75
-weight_potential = 0.25
+weight_quality = 0.7
+weight_potential = 0.3
 decay_quimica = 0.5
-bonus_titular = 4.5
-bonus_elenco = 2.5
+bonus_titular = 6
+bonus_elenco = 3
 peso_asset = 600.0 
 peso_performance = 2000.0 
 bonus_entrosamento = 100.0
@@ -114,7 +122,7 @@ chemistry_bonus = 1.2
 
 [scenario_tree.manual_events.node_3]
 label = "Mudança de Técnico + Lesão Craque"
-tactical_override = "442"
+tactical_override = "532"
 injury_overrides = ["Giorgian de Arrascaeta"]
 market_shock = -0.15
 

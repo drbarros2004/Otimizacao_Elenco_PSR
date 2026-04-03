@@ -137,7 +137,7 @@ function build_squad_optimization_model(data::ModelData, params::ModelParameters
     # Baseline payroll comes from the initial squad at window 0.
     initial_window = first(T)
     initial_payroll_million = sum(money_to_millions(data.wage_map[(j, initial_window)]) for j in data.initial_squad)
-    salary_cap_per_window = initial_payroll_million * params.salary_cap_multiplier_initial * params.salary_cap_window_factor
+    salary_cap_per_window = initial_payroll_million * params.salary_cap_multiplier_initial
 
     verbose && println("  │  Initial payroll baseline: €$(round(initial_payroll_million, digits=2))M")
     verbose && println("  │  Salary cap per window: €$(round(salary_cap_per_window, digits=2))M")

@@ -13,7 +13,7 @@ EXACT translation of Python/PuLP model including:
 using JuMP, Gurobi, DataFrames, CSV
 
 # Declaring constants
-const S_MAX = 10.0         
+const S_MAX = 20.0         
 const S_INICIAL = 5.0      
 
 const BIG_M = 1000.0 # para que serve isso?
@@ -70,7 +70,6 @@ struct ModelParameters
     transaction_cost_sell::Float64
     signing_bonus_rate::Float64
     salary_cap_multiplier_initial::Float64
-    salary_cap_window_factor::Float64
     salary_cap_penalty::Float64
     formation_catalog::Dict{String, Dict{String, Int}}
     formation_by_window::Dict{Int, String}
@@ -91,12 +90,11 @@ struct ModelParameters
         seasonal_revenue::Float64 = 50e6,
         max_squad_size::Int = 30,
         min_squad_size::Int = 18,
-        friction_penalty::Float64 = 1.5,
+        friction_penalty::Float64 = 0,
         transaction_cost_buy::Float64 = 0.12,
         transaction_cost_sell::Float64 = 0.10,
         signing_bonus_rate::Float64 = 0.5,
         salary_cap_multiplier_initial::Float64 = 1.2,
-        salary_cap_window_factor::Float64 = 1.0,
         salary_cap_penalty::Float64 = P_SALARIO,
         formation_catalog::Dict{String, Dict{String, Int}} = Dict(
             "default" => Dict( # 4-3-3
@@ -125,7 +123,7 @@ struct ModelParameters
     )
         new(initial_budget, seasonal_revenue, max_squad_size, min_squad_size,
             friction_penalty, transaction_cost_buy, transaction_cost_sell, signing_bonus_rate,
-            salary_cap_multiplier_initial, salary_cap_window_factor, salary_cap_penalty,
+            salary_cap_multiplier_initial, salary_cap_penalty,
             formation_catalog, formation_by_window, bench_targets, squad_position_penalty,
             weight_quality, weight_potential, decay_quimica,
             peso_asset, peso_performance, bonus_entrosamento, risk_appetite,

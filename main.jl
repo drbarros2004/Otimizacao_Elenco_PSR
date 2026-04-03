@@ -465,7 +465,6 @@ function load_experiment_config(config_path::String=DEFAULT_EXPERIMENT_CONFIG_PA
     transaction_cost_sell = Float64(get(constraints_cfg, "transaction_cost_sell", 0.10))
     signing_bonus_rate = Float64(get(constraints_cfg, "signing_bonus_rate", 0.5))
     salary_cap_multiplier_initial = Float64(get(constraints_cfg, "salary_cap_multiplier_initial", 1.2))
-    salary_cap_window_factor = Float64(get(constraints_cfg, "salary_cap_window_factor", 1.0))
     salary_cap_penalty = Float64(get(constraints_cfg, "salary_cap_penalty", P_SALARIO))
     squad_position_penalty = Float64(get(constraints_cfg, "squad_position_penalty", 0.0))
     if min_squad_size > max_squad_size
@@ -479,9 +478,6 @@ function load_experiment_config(config_path::String=DEFAULT_EXPERIMENT_CONFIG_PA
     end
     if salary_cap_multiplier_initial <= 0
         error("constraints.salary_cap_multiplier_initial must be > 0.")
-    end
-    if salary_cap_window_factor <= 0
-        error("constraints.salary_cap_window_factor must be > 0.")
     end
     if salary_cap_penalty <= 0
         error("constraints.salary_cap_penalty must be > 0.")
@@ -513,7 +509,6 @@ function load_experiment_config(config_path::String=DEFAULT_EXPERIMENT_CONFIG_PA
         transaction_cost_sell = transaction_cost_sell,
         signing_bonus_rate = signing_bonus_rate,
         salary_cap_multiplier_initial = salary_cap_multiplier_initial,
-        salary_cap_window_factor = salary_cap_window_factor,
         salary_cap_penalty = salary_cap_penalty,
         formation_catalog = formation_catalog,
         formation_by_window = formation_by_window,
@@ -543,8 +538,7 @@ function load_experiment_config(config_path::String=DEFAULT_EXPERIMENT_CONFIG_PA
     println("   Initial strategy: $initial_squad_strategy")
     println("   Tactical schemes: $(join(sort(collect(keys(formation_catalog))), ", "))")
     println("   Budget: €$(round(initial_budget/1e6, digits=1))M | Seasonal revenue: €$(round(seasonal_revenue/1e6, digits=1))M")
-    println("   Salary cap multiplier (initial payroll): x$(round(salary_cap_multiplier_initial, digits=2))")
-    println("   Salary cap window factor: $(round(salary_cap_window_factor, digits=2)) | penalty: $(round(salary_cap_penalty, digits=1))")
+    println("   Salary cap multiplier (initial payroll): x$(round(salary_cap_multiplier_initial, digits=2)) | penalty: $(round(salary_cap_penalty, digits=1))")
     println("   Squad position penalty: $(round(squad_position_penalty, digits=1)) | Bench targets: $(bench_targets)")
 
     if stochastic_config.enabled && !isnothing(scenario_tree)

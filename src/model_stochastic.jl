@@ -148,7 +148,7 @@ function build_stochastic_squad_optimization_model(
     verbose && println("  ├─ Salary cap constraints (soft, node-indexed)...")
 
     initial_payroll_million = sum(money_to_millions(data.wage_node_map[(j, root_id)]) for j in data.initial_squad)
-    salary_cap_per_node = initial_payroll_million * params.salary_cap_multiplier_initial * params.salary_cap_window_factor
+    salary_cap_per_node = initial_payroll_million * params.salary_cap_multiplier_initial
 
     verbose && println("  │  Initial payroll baseline: €$(round(initial_payroll_million, digits=2))M")
     verbose && println("  │  Salary cap per node: €$(round(salary_cap_per_node, digits=2))M")
