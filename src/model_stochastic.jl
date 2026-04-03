@@ -139,12 +139,14 @@ function build_stochastic_squad_optimization_model(
         )
     end
 
-    # ==== SQUAD SIZE ====
-    verbose && println("  ├─ Squad size constraints by node...")
+    # ==== SQUAD SIZE (EFFECTIVE CAPACITY) ====
+    verbose && println("  ├─ Squad size constraints (Effective Capacity)...")
 
     for n in N
         @constraint(model, sum(x[j,n] for j in J) <= params.max_squad_size)
-        @constraint(model, sum(x[j,n] for j in J) >= params.min_squad_size)
+        @constraint(model,
+            sum(x[j,n] * data.starter_allowed_map[(j,n)] for j in J) >= params.min_squad_size
+        )
     end
 
     # ==== SALARY CAP (SOFT) ====
