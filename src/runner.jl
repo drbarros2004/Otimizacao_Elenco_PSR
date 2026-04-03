@@ -30,6 +30,8 @@ function run_pipeline(
         println("🔎 Applied top-K filter by position (K=$(top_k_players_per_position)): $before_count -> $after_count players")
     end
 
+    is_foreign_map = build_is_foreign_map(df)
+
     # STEP 2: Projections (Deterministic Logic)
     ovr_map, value_map, growth_potential_map = generate_projections(df, num_windows)
 
@@ -91,7 +93,8 @@ function run_pipeline(
             forced_sell_node_map = forced_sell_node_map,
             chemistry_multiplier_map = chemistry_multiplier_map,
             position_requirements_map = node_position_requirements,
-            allow_root_transactions = stochastic_config.allow_root_transactions
+            allow_root_transactions = stochastic_config.allow_root_transactions,
+            is_foreign_map = is_foreign_map
         )
 
         println("✅ Stochastic node-indexed data generated.")
@@ -100,7 +103,7 @@ function run_pipeline(
     println("="^50)
     println("✅ Pipeline finished! Unified report saved in 'data/processed/player_window_audit.csv'.")
 
-    return df, ovr_map, value_map, cost_map, growth_potential_map, wage_map, stochastic_bundle
+    return df, ovr_map, value_map, cost_map, growth_potential_map, wage_map, is_foreign_map, stochastic_bundle
 end
 
 """
@@ -123,7 +126,8 @@ function run_optimization(df::DataFrame, ovr_map::Dict, value_map::Dict, cost_ma
                           seasonal_revenue::Float64 = 50e6,
                           initial_squad_strategy::String = "top_value",
                           num_windows::Int = 4,
-                          model_params_override::Union{Nothing,ModelParameters} = nothing)
+                          model_params_override::Union{Nothing,ModelParameters} = nothing,
+                          is_foreign_map_override::Union{Nothing,Dict{Int,Bool}} = nothing)
 
     println("\n" * "="^60)
     println("⚽ SQUAD OPTIMIZATION MODULE")
@@ -179,6 +183,8 @@ function run_optimization(df::DataFrame, ovr_map::Dict, value_map::Dict, cost_ma
     # -------------------------------------------------------------------------
     println("\n📊 Preparing optimization data...")
 
+    is_foreign_map = isnothing(is_foreign_map_override) ? build_is_foreign_map(df) : is_foreign_map_override
+
     model_data = ModelData(
         df,
         windows,
@@ -189,7 +195,8 @@ function run_optimization(df::DataFrame, ovr_map::Dict, value_map::Dict, cost_ma
         wage_map,
         initial_squad,
         model_params.formation_catalog,
-        model_params.formation_by_window
+        model_params.formation_by_window,
+        is_foreign_map
     )
 
     # -------------------------------------------------------------------------
@@ -224,7 +231,8 @@ function run_optimization_stochastic(
     initial_budget::Float64 = 150e6,
     seasonal_revenue::Float64 = 50e6,
     initial_squad_strategy::String = "top_value",
-    model_params_override::Union{Nothing,ModelParameters} = nothing
+    model_params_override::Union{Nothing,ModelParameters} = nothing,
+    is_foreign_map_override::Union{Nothing,Dict{Int,Bool}} = nothing
 )
     println("\n" * "="^60)
     println("🌳 STOCHASTIC SQUAD OPTIMIZATION MODULE")
@@ -270,12 +278,22 @@ function run_optimization_stochastic(
 
     println("   ✅ Initial squad size: $(length(initial_squad)) players")
 
+    bundle_foreign_map = hasproperty(stochastic_bundle, :is_foreign_map) ? stochastic_bundle.is_foreign_map : nothing
+    is_foreign_map = if !isnothing(is_foreign_map_override)
+        is_foreign_map_override
+    elseif !isnothing(bundle_foreign_map)
+        bundle_foreign_map
+    else
+        build_is_foreign_map(df)
+    end
+
     println("\n📊 Preparing stochastic optimization data...")
     stochastic_data = build_stochastic_model_data(
         df,
         stochastic_bundle,
         initial_squad,
-        model_params.formation_catalog
+        model_params.formation_catalog,
+        is_foreign_map
     )
 
     model = build_stochastic_squad_optimization_model(stochastic_data, model_params, verbose=true)
@@ -393,6 +411,7 @@ function main()
     cost_map,
     growth_potential_map,
     wage_map,
+    is_foreign_map,
     stochastic_bundle = run_pipeline(
         exp_cfg.num_windows,
         stochastic_config = exp_cfg.stochastic_config,
@@ -417,7 +436,8 @@ function main()
                     initial_budget = exp_cfg.model_params.initial_budget,
                     seasonal_revenue = exp_cfg.model_params.seasonal_revenue,
                     initial_squad_strategy = exp_cfg.initial_squad_strategy,
-                    model_params_override = exp_cfg.model_params
+                    model_params_override = exp_cfg.model_params,
+                    is_foreign_map_override = is_foreign_map
                 )
             else
                 run_optimization(
@@ -426,7 +446,8 @@ function main()
                     seasonal_revenue = exp_cfg.model_params.seasonal_revenue,
                     initial_squad_strategy = exp_cfg.initial_squad_strategy,
                     num_windows = exp_cfg.num_windows,
-                    model_params_override = exp_cfg.model_params
+                    model_params_override = exp_cfg.model_params,
+                    is_foreign_map_override = is_foreign_map
                 )
             end
 
@@ -457,7 +478,7 @@ function main()
         println("   2. Install Gurobi.jl: julia -e 'using Pkg; Pkg.add(\"Gurobi\"); Pkg.build(\"Gurobi\")'")
         println("\n   Then run: julia main.jl")
 
-        return df, ovr_map, value_map, cost_map, growth_potential_map, wage_map, stochastic_bundle
+        return df, ovr_map, value_map, cost_map, growth_potential_map, wage_map, is_foreign_map, stochastic_bundle
     end
 end
 

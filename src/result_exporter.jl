@@ -5,6 +5,28 @@ Transforms JuMP variables into tidy tables and persists CSV outputs.
 
 using CSV, DataFrames, JuMP
 
+function _build_player_metadata(players::DataFrame, is_foreign_map::Dict{Int, Bool})
+    meta_cols = Symbol[:player_id, :name, :pos_group, :club_name, :club_league_name]
+    has_country = :country_name in Symbol.(names(players))
+
+    if has_country
+        push!(meta_cols, :country_name)
+    end
+
+    player_meta = select(players, meta_cols)
+    rename!(player_meta, :club_name => :origin_club, :club_league_name => :origin_league)
+
+    if has_country
+        rename!(player_meta, :country_name => :nationality)
+    else
+        player_meta.nationality = fill(missing, nrow(player_meta))
+    end
+
+    player_meta.is_foreign = [get(is_foreign_map, Int(p_id), false) for p_id in player_meta.player_id]
+
+    return player_meta
+end
+
 """
     extract_deterministic_results(model, data; ...)
 
@@ -227,6 +249,14 @@ function extract_stochastic_results(
         sold = sum(data.value_node_map[(j, n)] * round(Int, value(model[:sell][j, n])) for j in J)
         buys = sum(round(Int, value(model[:buy][j, n])) for j in J)
         sells = sum(round(Int, value(model[:sell][j, n])) for j in J)
+        foreign_squad_count = sum(
+            round(Int, value(model[:x][j, n])) * (get(data.is_foreign_map, j, false) ? 1 : 0)
+            for j in J
+        )
+        foreign_starter_count = sum(
+            round(Int, value(model[:y][j, n])) * (get(data.is_foreign_map, j, false) ? 1 : 0)
+            for j in J
+        )
 
         push!(budget_rows, (
             node_id = n,
@@ -239,6 +269,9 @@ function extract_stochastic_results(
             transfer_sold = sold,
             buys_count = buys,
             sells_count = sells,
+            foreign_squad_count = foreign_squad_count,
+            foreign_starter_count = foreign_starter_count,
+            foreign_excess = value(model[:excess_foreigners][n]),
         ))
     end
     df_budget = DataFrame(budget_rows)
@@ -288,15 +321,7 @@ Exports deterministic optimization outputs.
 function export_results(results::ModelResults, data::ModelData, output_dir::String="output")
     mkpath(output_dir)
 
-    player_meta = select(
-        data.players,
-        :player_id,
-        :name,
-        :pos_group,
-        :club_name,
-        :club_league_name
-    )
-    rename!(player_meta, :club_name => :origin_club, :club_league_name => :origin_league)
+    player_meta = _build_player_metadata(data.players, data.is_foreign_map)
 
     df_output = leftjoin(results.squad_decisions, player_meta, on=:player_id)
 
@@ -324,15 +349,7 @@ function export_stochastic_results(
 )
     mkpath(output_dir)
 
-    player_meta = select(
-        data.players,
-        :player_id,
-        :name,
-        :pos_group,
-        :club_name,
-        :club_league_name
-    )
-    rename!(player_meta, :club_name => :origin_club, :club_league_name => :origin_league)
+    player_meta = _build_player_metadata(data.players, data.is_foreign_map)
 
     df_output = leftjoin(results.node_decisions, player_meta, on=:player_id)
 

@@ -21,15 +21,17 @@ signing_bonus_rate = 0.5
 # Soft salary-cap controls based on initial squad payroll
 salary_cap_multiplier_initial = 1.0 # qual a diferença entre o multiplier e o window factor
 salary_cap_penalty = 500.0
+foreign_limit = 9
+foreign_violation_penalty = 80000
 
 squad_position_penalty = 40000.0 # Penalidade suave (menor que o salário)
 
 [bench_targets]
 GK = 2 # Dois goleiros reservas, logo 3 GKs no total no elenco
-CB = 2 # Dois zagueiros no banco
+CB = 3 # Dois zagueiros no banco
 RB = 1
 LB = 1
-CM = 3
+CM = 4
 RW = 1
 LW = 1
 ST = 1

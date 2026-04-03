@@ -46,6 +46,9 @@ function build_stochastic_squad_optimization_model(
         error("No tactical positions found in stochastic formation catalog.")
     end
 
+    J_foreign = [j for j in J if get(data.is_foreign_map, j, true)]
+    verbose && println("  ├─ Foreign-player pool: $(length(J_foreign))")
+
     # Chemistry pairs are kept based on initial squad for tractability.
     pairs = generate_player_pairs(data.initial_squad)
     verbose && println("  ├─ Chemistry pairs: $(length(pairs))")
@@ -68,6 +71,7 @@ function build_stochastic_squad_optimization_model(
     # Soft constraint slacks
     @variable(model, slack_posicao[p in formation_positions, n in N] >= 0)
     @variable(model, slack_salario[n in N] >= 0)
+    @variable(model, excess_foreigners[n in N] >= 0)
 
     # ==== INITIAL CONDITIONS (ROOT NODE) ====
     verbose && println("  ├─ Root-node initial conditions...")
@@ -180,6 +184,15 @@ function build_stochastic_squad_optimization_model(
         )
     end
 
+    # ==== FOREIGN-PLAYER SQUAD CAP (SOFT) ====
+    verbose && println("  ├─ Foreign-player squad cap constraints (soft, node-indexed)...")
+
+    for n in N
+        @constraint(model,
+            sum(x[j,n] for j in J_foreign) <= params.foreign_limit + excess_foreigners[n]
+        )
+    end
+
     # ==== FORMATION (NODE-DEPENDENT N_{r,n}) ====
     verbose && println("  ├─ Tactical formation constraints by node (N_{r,n})...")
 
@@ -194,6 +207,13 @@ function build_stochastic_squad_optimization_model(
                 sum(y[j,n] for j in players_in_pos) == required_count
             )
         end
+    end
+
+    # ==== FOREIGN-PLAYER STARTER CAP (HARD) ====
+    verbose && println("  ├─ Foreign-player starter cap constraints (hard, node-indexed)...")
+
+    for n in N
+        @constraint(model, sum(y[j,n] for j in J_foreign) <= params.foreign_limit)
     end
 
     # ==== SQUAD DEPTH BY POSITION (SOFT UPPER BOUNDS) ====
@@ -337,6 +357,7 @@ function build_stochastic_squad_optimization_model(
         end
 
         add_to_expression!(obj_terms, -prob_n * params.salary_cap_penalty * slack_salario[n])
+        add_to_expression!(obj_terms, -prob_n * params.foreign_violation_penalty * excess_foreigners[n])
         add_to_expression!(obj_terms, -prob_n * P_CAIXA * budget_deficit[n])
     end
 

@@ -9,7 +9,7 @@ const PROCESSED_OUTPUT_PATH = "data/processed/processed_player_data.csv"
 const SCRAPER_COLUMNS = [
     :player_id, :name, :dob, :positions, :overall_rating,
     :potential, :value, :wage, :international_reputation,
-    :club_name, :club_league_name
+    :club_name, :club_league_name, :country_name
 ]
 
 """
@@ -158,4 +158,52 @@ function filter_top_k_players_by_position(
 
     unique!(filtered, :player_id)
     return filtered
+end
+
+"""
+    build_is_foreign_map(df_players::DataFrame)
+
+Builds a player-level map where `true` means the player is foreign (`country_name != Brazil`).
+If `country_name` is missing, a conservative fallback is used:
+- `club_league_name` containing "brazil" or "brasileir" => Brazilian (false)
+- otherwise => foreign (true)
+"""
+function build_is_foreign_map(df_players::DataFrame)
+    cols = Set(Symbol.(names(df_players)))
+    if !(:player_id in cols)
+        error("Cannot build is_foreign_map: missing required column 'player_id'.")
+    end
+
+    has_country = :country_name in cols
+    has_league = :club_league_name in cols
+
+    is_foreign_map = Dict{Int, Bool}()
+
+    for row in eachrow(df_players)
+        player_id = Int(row.player_id)
+
+        country_norm = ""
+        if has_country && !ismissing(row.country_name)
+            country_norm = lowercase(strip(String(row.country_name)))
+        end
+
+        if !isempty(country_norm)
+            is_brazilian_country = (country_norm == "brazil") || (country_norm == "brasil")
+            is_foreign_map[player_id] = !is_brazilian_country
+            continue
+        end
+
+        league_norm = ""
+        if has_league && !ismissing(row.club_league_name)
+            league_norm = lowercase(strip(String(row.club_league_name)))
+        end
+
+        is_brazilian_league = !isempty(league_norm) && (
+            occursin("brazil", league_norm) || occursin("brasileir", league_norm)
+        )
+
+        is_foreign_map[player_id] = !is_brazilian_league
+    end
+
+    return is_foreign_map
 end

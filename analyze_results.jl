@@ -15,6 +15,19 @@ const STOCH_BUDGET_PATH = "output/budget_evolution_nodes.csv"
 
 _files_exist(paths::Vector{String}) = all(isfile, paths)
 
+function _to_bool_flag(v)
+    if ismissing(v)
+        return false
+    elseif v isa Bool
+        return v
+    elseif v isa Integer
+        return v != 0
+    end
+
+    normalized = lowercase(strip(String(v)))
+    return normalized in ("true", "1", "yes", "y")
+end
+
 function _latest_mtime(paths::Vector{String}) # isso é a melhor forma de fazer isso?
     return maximum((isfile(p) ? Float64(stat(p).mtime) : 0.0) for p in paths)
 end
@@ -291,7 +304,9 @@ Analyzes node-indexed stochastic decisions.
 """
 function analyze_stochastic_decisions(
     decisions_path::String="output/squad_decisions_nodes.csv",
-    tree_path::String="output/tree_metadata.csv"
+    tree_path::String="output/tree_metadata.csv";
+    budget_path::String="output/budget_evolution_nodes.csv",
+    foreign_limit::Int=9
 )
     if !isfile(decisions_path)
         error("Stochastic decisions file not found at $decisions_path. Run stochastic optimization first!")
@@ -299,6 +314,7 @@ function analyze_stochastic_decisions(
 
     df = CSV.read(decisions_path, DataFrame)
     df_tree = isfile(tree_path) ? CSV.read(tree_path, DataFrame) : nothing
+    df_budget = isfile(budget_path) ? CSV.read(budget_path, DataFrame) : nothing
 
     println("\n" * "="^70)
     println("STOCHASTIC NODE-INDEXED RESULTS ANALYSIS")
@@ -338,6 +354,71 @@ function analyze_stochastic_decisions(
     bought_df = filter(r -> r.bought == 1, df)
     println("   • Total sell actions across nodes: $(nrow(sold_df))")
     println("   • Total buy actions across nodes: $(nrow(bought_df))")
+
+    if :is_foreign in Symbol.(names(df))
+        println("\n🌍 FOREIGN PLAYERS BY NODE")
+        println("   • Starter hard cap per node: $foreign_limit")
+
+        node_ids = sort(unique(Int.(df.node_id)))
+        hard_violations = Int[]
+        max_foreign_starters = 0
+
+        for node_id in node_ids
+            df_node = filter(r -> Int(r.node_id) == node_id, df)
+            foreign_flags = [_to_bool_flag(v) for v in df_node.is_foreign]
+
+            foreign_squad_count = 0
+            foreign_starter_count = 0
+
+            for idx in eachindex(foreign_flags)
+                if !foreign_flags[idx]
+                    continue
+                end
+
+                if Int(df_node.in_squad[idx]) == 1
+                    foreign_squad_count += 1
+                end
+                if Int(df_node.is_starter[idx]) == 1
+                    foreign_starter_count += 1
+                end
+            end
+
+            max_foreign_starters = max(max_foreign_starters, foreign_starter_count)
+            if foreign_starter_count > foreign_limit
+                push!(hard_violations, node_id)
+            end
+
+            computed_excess = max(0, foreign_squad_count - foreign_limit)
+
+            exported_excess = missing
+            if !isnothing(df_budget) && (:foreign_excess in Symbol.(names(df_budget)))
+                budget_node = filter(r -> Int(r.node_id) == node_id, df_budget)
+                if nrow(budget_node) > 0
+                    exported_excess = round(Float64(first(budget_node.foreign_excess)), digits=3)
+                end
+            end
+
+            if ismissing(exported_excess)
+                println(
+                    "   • Node $node_id: squad_foreign=$(foreign_squad_count), starters_foreign=$(foreign_starter_count), computed_excess=$(computed_excess)"
+                )
+            else
+                println(
+                    "   • Node $node_id: squad_foreign=$(foreign_squad_count), starters_foreign=$(foreign_starter_count), computed_excess=$(computed_excess), slack_excess=$(exported_excess)"
+                )
+            end
+        end
+
+        println("   • Max foreign starters observed: $max_foreign_starters")
+
+        if isempty(hard_violations)
+            println("   ✅ Hard constraint satisfied for all nodes.")
+        else
+            println("   ⚠️  Hard constraint violations at nodes: $(hard_violations)")
+        end
+    else
+        println("\n⚠️  Column 'is_foreign' not found in stochastic decisions output.")
+    end
 
     return df
 end

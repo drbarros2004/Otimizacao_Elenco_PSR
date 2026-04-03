@@ -472,6 +472,8 @@ function load_experiment_config(config_path::String=DEFAULT_EXPERIMENT_CONFIG_PA
     signing_bonus_rate = Float64(get(constraints_cfg, "signing_bonus_rate", 0.5))
     salary_cap_multiplier_initial = Float64(get(constraints_cfg, "salary_cap_multiplier_initial", 1.2))
     salary_cap_penalty = Float64(get(constraints_cfg, "salary_cap_penalty", P_SALARIO))
+    foreign_limit = Int(get(constraints_cfg, "foreign_limit", 9))
+    foreign_violation_penalty = Float64(get(constraints_cfg, "foreign_violation_penalty", 0.5))
     squad_position_penalty = Float64(get(constraints_cfg, "squad_position_penalty", 0.0))
     if min_squad_size > max_squad_size
         error("constraints.min_squad_size cannot be greater than constraints.max_squad_size.")
@@ -487,6 +489,12 @@ function load_experiment_config(config_path::String=DEFAULT_EXPERIMENT_CONFIG_PA
     end
     if salary_cap_penalty <= 0
         error("constraints.salary_cap_penalty must be > 0.")
+    end
+    if foreign_limit < 0
+        error("constraints.foreign_limit must be >= 0.")
+    end
+    if foreign_violation_penalty < 0
+        error("constraints.foreign_violation_penalty must be >= 0.")
     end
     if squad_position_penalty < 0
         error("constraints.squad_position_penalty must be >= 0.")
@@ -516,6 +524,8 @@ function load_experiment_config(config_path::String=DEFAULT_EXPERIMENT_CONFIG_PA
         signing_bonus_rate = signing_bonus_rate,
         salary_cap_multiplier_initial = salary_cap_multiplier_initial,
         salary_cap_penalty = salary_cap_penalty,
+        foreign_limit = foreign_limit,
+        foreign_violation_penalty = foreign_violation_penalty,
         formation_catalog = formation_catalog,
         formation_by_window = formation_by_window,
         bench_targets = bench_targets,
@@ -545,6 +555,7 @@ function load_experiment_config(config_path::String=DEFAULT_EXPERIMENT_CONFIG_PA
     println("   Tactical schemes: $(join(sort(collect(keys(formation_catalog))), ", "))")
     println("   Budget: €$(round(initial_budget/1e6, digits=1))M | Seasonal revenue: €$(round(seasonal_revenue/1e6, digits=1))M")
     println("   Salary cap multiplier (initial payroll): x$(round(salary_cap_multiplier_initial, digits=2)) | penalty: $(round(salary_cap_penalty, digits=1))")
+    println("   Foreign-player rule: limit $(foreign_limit) | soft excess penalty $(round(foreign_violation_penalty, digits=3))")
     println("   Squad position penalty: $(round(squad_position_penalty, digits=1)) | Bench targets: $(bench_targets)")
 
     if stochastic_config.enabled && !isnothing(scenario_tree)

@@ -38,6 +38,7 @@ struct ModelData
     initial_squad::Vector{Int}
     formation_catalog::Dict{String, Dict{String, Int}}
     formation_by_window::Dict{Int, String}
+    is_foreign_map::Dict{Int, Bool}
 end
 
 struct ModelDataStochastic
@@ -57,6 +58,7 @@ struct ModelDataStochastic
     allow_root_transactions::Bool
     initial_squad::Vector{Int}
     formation_catalog::Dict{String, Dict{String, Int}}
+    is_foreign_map::Dict{Int, Bool}
 end
 
 struct ModelParameters
@@ -70,6 +72,8 @@ struct ModelParameters
     signing_bonus_rate::Float64
     salary_cap_multiplier_initial::Float64
     salary_cap_penalty::Float64
+    foreign_limit::Int
+    foreign_violation_penalty::Float64
     formation_catalog::Dict{String, Dict{String, Int}}
     formation_by_window::Dict{Int, String}
     bench_targets::Dict{String, Int}
@@ -95,6 +99,8 @@ struct ModelParameters
         signing_bonus_rate::Float64 = 0.5,
         salary_cap_multiplier_initial::Float64 = 1.2,
         salary_cap_penalty::Float64 = P_SALARIO,
+        foreign_limit::Int = 9,
+        foreign_violation_penalty::Float64 = 0.5,
         formation_catalog::Dict{String, Dict{String, Int}} = Dict(
             "default" => Dict( # 4-3-3
                 "GK" => 1,
@@ -123,6 +129,7 @@ struct ModelParameters
         new(initial_budget, seasonal_revenue, max_squad_size, min_squad_size,
             friction_penalty, transaction_cost_buy, transaction_cost_sell, signing_bonus_rate,
             salary_cap_multiplier_initial, salary_cap_penalty,
+            foreign_limit, foreign_violation_penalty,
             formation_catalog, formation_by_window, bench_targets, squad_position_penalty,
             weight_quality, weight_potential, decay_quimica,
             peso_asset, peso_performance, bonus_entrosamento, risk_appetite,
@@ -182,7 +189,8 @@ function build_stochastic_model_data(
     players::DataFrame,
     stochastic_bundle,
     initial_squad::Vector{Int},
-    formation_catalog::Dict{String, Dict{String, Int}}
+    formation_catalog::Dict{String, Dict{String, Int}},
+    is_foreign_map::Dict{Int, Bool}
 )
     tree = stochastic_bundle.tree
     node_ids = sort(collect(keys(tree.nodes)))
@@ -208,7 +216,8 @@ function build_stochastic_model_data(
         stochastic_bundle.position_requirements_map,
         stochastic_bundle.allow_root_transactions,
         initial_squad,
-        formation_catalog
+        formation_catalog,
+        is_foreign_map
     )
 
     assert_stochastic_data_contract(model_data)
@@ -260,6 +269,10 @@ function assert_stochastic_data_contract(data::ModelDataStochastic)
     end
 
     player_ids = Int.(data.players.player_id)
+    if length(data.is_foreign_map) < length(player_ids)
+        error("is_foreign_map is incomplete for the current player universe.")
+    end
+
     for node_id in node_ids
         for p_id in player_ids
             if !haskey(data.ovr_node_map, (p_id, node_id))
@@ -285,6 +298,9 @@ function assert_stochastic_data_contract(data::ModelDataStochastic)
             end
             if !haskey(data.forced_sell_node_map, (p_id, node_id))
                 error("Missing forced_sell_node_map entry for player $p_id at node $node_id.")
+            end
+            if !haskey(data.is_foreign_map, p_id)
+                error("Missing is_foreign_map entry for player $p_id.")
             end
 
             forced_sell = data.forced_sell_node_map[(p_id, node_id)]
