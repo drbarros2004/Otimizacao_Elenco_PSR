@@ -56,6 +56,7 @@ struct ModelDataStochastic
     sell_allowed_map::Dict{Tuple{Int, Int}, Int}
     chemistry_multiplier_map::Dict{Int, Float64}
     position_requirements_map::Dict{Tuple{String, Int}, Int}
+    allow_root_transactions::Bool
     initial_squad::Vector{Int}
     formation_catalog::Dict{String, Dict{String, Int}}
 end
@@ -206,6 +207,7 @@ function build_stochastic_model_data(
         stochastic_bundle.sell_allowed_map,
         stochastic_bundle.chemistry_multiplier_map,
         stochastic_bundle.position_requirements_map,
+        stochastic_bundle.allow_root_transactions,
         initial_squad,
         formation_catalog
     )

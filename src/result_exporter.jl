@@ -175,6 +175,18 @@ function extract_stochastic_results(
                 else
                     data.ovr_node_map[(j, parent::Int)]
                 end
+
+                parent_buy = if isnothing(parent)
+                    0
+                else
+                    round(Int, value(model[:buy][j, parent::Int]))
+                end
+                parent_sell = if isnothing(parent)
+                    0
+                else
+                    round(Int, value(model[:sell][j, parent::Int]))
+                end
+
                 starter_allowed = data.starter_allowed_map[(j, n)]
                 push!(decision_rows, (
                     node_id = n,
@@ -189,6 +201,9 @@ function extract_stochastic_results(
                     starter_in_node = y_val,
                     bought = b_val,
                     sold = s_val,
+                    bought_in_parent = parent_buy,
+                    sold_in_parent = parent_sell,
+                    bought_from_root = (!isnothing(parent) && parent::Int == data.tree.root_id && parent_buy == 1) ? 1 : 0,
                     starter_allowed = starter_allowed,
                     injured = starter_allowed == 1 ? 0 : 1,
                     ovr = ovr_now,

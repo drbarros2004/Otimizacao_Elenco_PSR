@@ -6,8 +6,8 @@ top_k_players_per_position = 600
 
 [optimization]
 # Financial setup
-initial_budget = 30000000.0 # 30 million euros
-seasonal_revenue = 5000000.0 # 5 million euros
+initial_budget = 40000000.0 # 40 million euros
+seasonal_revenue = 0 # 5 million euros
 # Options: "top_value" or "team:<Club Name>"
 initial_squad_strategy = "team:Flamengo"
 
@@ -83,9 +83,12 @@ peso_performance = 2000.0
 bonus_entrosamento = 100.0
 risk_appetite = 0.001
 
+# TODO: Transformar o root transactions a única forma como o modelo opera. Melhorar como isso é feito no dashboard.
+
 [stochastic]
 # Keep false to preserve deterministic behavior.
 enabled = true
+allow_root_transactions = true
 ovr_shock_sigma = 0.06
 value_shock_sigma = 0.12
 chemistry_conflict_probability = 0.10
@@ -135,6 +138,51 @@ market_shock = -0.15
 label = "Crise na Gávea"
 market_shock = -0.15
 chemistry_bonus = -1
+
+# --- ESTÁGIO 2 (Filhos do Nó 3 - O ramo da Crise) ---
+
+[scenario_tree.manual_events.node_6]
+label = "Choque de Gestão (Recuperação)"
+# O time reage à saída do técnico, melhora o ambiente e o mercado volta a valorizar os ativos.
+market_shock = 0.10
+chemistry_bonus = 1.1
+tactical_override = "433"
+
+[scenario_tree.manual_events.node_7]
+label = "Crise Financeira: Saída de Pilares"
+injury_overrides = ["Pedro Guilherme"]
+market_shock = -0.25
+chemistry_bonus = 0.8
+
+# --- ESTÁGIO 3 (Nós Folha do ramo da Crise - Resultados Finais) ---
+
+[scenario_tree.manual_events.node_12]
+label = "Retorno do Craque e Estabilidade"
+# Recuperação total após o choque de gestão do Nó 6.
+market_shock = 0.15
+chemistry_bonus = 1.2
+
+[scenario_tree.manual_events.node_13]
+label = "Venda de Jóias da Base"
+# O clube precisa de caixa após a estabilização do Nó 6.
+# Tiramos jogadores promissores para simular vendas inevitáveis.
+injury_overrides = ["Lorran Lucas", "Matheus Gonçalves"]
+market_shock = 0.05
+
+[scenario_tree.manual_events.node_14]
+label = "Reconstrução com Elenco Curto"
+# Resultado da Crise Financeira do Nó 7. O time sobrevive mas perde coesão.
+tactical_override = "442"
+market_shock = -0.10
+chemistry_bonus = 0.9
+
+[scenario_tree.manual_events.node_15]
+label = "Falência Técnica (Stress Test)"
+# O pior cenário possível: lesões em massa + mercado em queda + vestiário quebrado.
+# Teste de robustez: como o modelo se comporta se perder quase todos os titulares?
+injury_overrides = ["Gerson Santos da Silva", "Nicolás de la Cruz", "Léo Ortiz", "Ayrton Lucas"]
+market_shock = -0.40
+chemistry_bonus = 0.5
 
 
 

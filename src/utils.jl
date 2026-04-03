@@ -2,6 +2,7 @@ using CSV, DataFrames, Dates, Random, Statistics
 
 Base.@kwdef struct StochasticConfig
     enabled::Bool = false
+    allow_root_transactions::Bool = false
     branching_by_stage::Vector{Int} = Int[]
     child_probabilities_by_stage::Vector{Vector{Float64}} = Vector{Vector{Float64}}()
     ovr_shock_sigma::Float64 = 0.0

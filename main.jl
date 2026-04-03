@@ -181,6 +181,7 @@ function _parse_stochastic_config(
     scenario_tree_cfg = get(cfg, "scenario_tree", Dict{String,Any}())
 
     enabled = Bool(get(stochastic_cfg, "enabled", false))
+    allow_root_transactions = Bool(get(stochastic_cfg, "allow_root_transactions", false))
 
     if !enabled
         return StochasticConfig(), nothing
@@ -214,6 +215,7 @@ function _parse_stochastic_config(
 
     stoch_config = StochasticConfig(
         enabled = enabled,
+        allow_root_transactions = allow_root_transactions,
         branching_by_stage = branching_by_stage,
         child_probabilities_by_stage = probabilities_by_stage,
         ovr_shock_sigma = ovr_shock_sigma,
@@ -543,6 +545,7 @@ function load_experiment_config(config_path::String=DEFAULT_EXPERIMENT_CONFIG_PA
 
     if stochastic_config.enabled && !isnothing(scenario_tree)
         println("   Stochastic mode: enabled")
+        println("   Allow root transactions (here-and-now): $(stochastic_config.allow_root_transactions)")
         println("   Branching by stage: $(stochastic_config.branching_by_stage)")
         println("   Scenario nodes: $(length(scenario_tree.nodes)) | leaf nodes: $(length(scenario_tree.leaf_nodes))")
         println("   Manual scenario events: $(length(stochastic_config.manual_node_events))")
@@ -665,7 +668,8 @@ function run_pipeline(
             starter_allowed_map = starter_allowed_map,
             sell_allowed_map = sell_allowed_map,
             chemistry_multiplier_map = chemistry_multiplier_map,
-            position_requirements_map = node_position_requirements
+            position_requirements_map = node_position_requirements,
+            allow_root_transactions = stochastic_config.allow_root_transactions
         )
 
         println("✅ Stochastic node-indexed data generated.")
