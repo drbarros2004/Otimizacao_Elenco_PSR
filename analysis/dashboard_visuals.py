@@ -101,11 +101,19 @@ def _injury_badge(row: pd.Series) -> str:
 
 def _reinforcement_badge(row: pd.Series) -> str:
     new_signing = int(row.get("is_new_reinforcement", 0)) == 1
-    return "<span title='Novo Reforço' style='color:#0E9F6E; font-size:1.2em;'> 🖋</span>" if new_signing else ""
+    return "<span title='New Signing' style='color:#0E9F6E; font-size:1.2em;'> 🖋</span>" if new_signing else ""
 
 
 def _root_inherited_badge(row: pd.Series) -> str:
     return ""
+
+
+def _is_dark_theme() -> bool:
+    try:
+        base = st.get_option("theme.base")
+    except Exception:
+        return False
+    return str(base).strip().lower() == "dark"
 
 
 def _signed_millions(value: float) -> str:
@@ -156,7 +164,7 @@ def build_pitch_figure(window_df: pd.DataFrame, selected_window: int, formation_
         name_short = _display_name(str(row["name"]), max_len=20)
         salary_txt = _money_thousands(_safe_float(row.get("wage", 0.0)))
         chemistry_val = row.get("chemistry_multiplier", pd.NA)
-        chemistry_txt = "N/A" if pd.isna(chemistry_val) else f"{_safe_float(chemistry_val):.2f} (nó)"
+        chemistry_txt = "N/A" if pd.isna(chemistry_val) else f"{_safe_float(chemistry_val):.2f} (node)"
         nationality_txt = str(row.get("nationality", "Unknown"))
         foreign_txt = "Yes" if _coerce_bool_or_none(row.get("is_foreign")) else "No"
 
@@ -202,7 +210,7 @@ def build_pitch_figure(window_df: pd.DataFrame, selected_window: int, formation_
         reserve_name = _display_name(str(row["name"]), max_len=24)
         salary_txt = _money_thousands(_safe_float(row.get("wage", 0.0)))
         chemistry_val = row.get("chemistry_multiplier", pd.NA)
-        chemistry_txt = "N/A" if pd.isna(chemistry_val) else f"{_safe_float(chemistry_val):.2f} (nó)"
+        chemistry_txt = "N/A" if pd.isna(chemistry_val) else f"{_safe_float(chemistry_val):.2f} (node)"
         nationality_txt = str(row.get("nationality", "Unknown"))
         foreign_txt = "Yes" if _coerce_bool_or_none(row.get("is_foreign")) else "No"
 
@@ -302,46 +310,71 @@ def build_pitch_figure(window_df: pd.DataFrame, selected_window: int, formation_
         )
     )
 
+    border_color = "#FFFFFF" if _is_dark_theme() else "#111111"
+
+    # Cálculo do centro do campo para o círculo central ser exato
+    center_x = FIELD_X_MAX / 2
+
     shapes = [
+        # Gramado
         dict(type="rect", x0=0, y0=0, x1=FIELD_X_MAX, y1=100, fillcolor="#4CAF50", line=dict(color="white", width=2), layer="below"),
+        # Linha de meio de campo
         dict(type="line", x0=0, y0=50, x1=FIELD_X_MAX, y1=50, line=dict(color="white", width=2), layer="below"),
-        dict(type="circle", x0=(40 * FIELD_X_SCALE), y0=40, x1=(60 * FIELD_X_SCALE), y1=60, line=dict(color="white", width=2), layer="below"),
+        
+        # CÍRCULO CENTRAL CORRIGIDO: 
+        # Usamos o centro real de X e um raio de 10 unidades para X e Y (sem multiplicar por SCALE no raio)
+        dict(type="circle", 
+             x0=center_x - 10, y0=40, 
+             x1=center_x + 10, y1=60, 
+             line=dict(color="white", width=2), layer="below"),
+        
+        # Grande Área Superior
         dict(type="rect", x0=(30 * FIELD_X_SCALE), y0=84, x1=(70 * FIELD_X_SCALE), y1=100, line=dict(color="white", width=2), layer="below"),
+        # Pequena Área Superior
         dict(type="rect", x0=(40 * FIELD_X_SCALE), y0=94, x1=(60 * FIELD_X_SCALE), y1=100, line=dict(color="white", width=2), layer="below"),
+        # Grande Área Inferior
         dict(type="rect", x0=(30 * FIELD_X_SCALE), y0=0, x1=(70 * FIELD_X_SCALE), y1=16, line=dict(color="white", width=2), layer="below"),
+        # Pequena Área Inferior
         dict(type="rect", x0=(40 * FIELD_X_SCALE), y0=0, x1=(60 * FIELD_X_SCALE), y1=6, line=dict(color="white", width=2), layer="below"),
+        
+        # Painel de Reservas
         dict(type="rect", x0=RESERVE_PANEL_X0, y0=0, x1=RESERVE_PANEL_X1, y1=100, fillcolor="#ECECEC", line=dict(width=2, color="black"), layer="below"),
+        
+        # Borda externa de contorno (para o efeito de "não flutuar")
+        dict(type="rect", x0=0, y0=0, x1=FIELD_X_MAX, y1=100, fillcolor="rgba(0,0,0,0)", line=dict(width=5, color=border_color), layer="above"),
     ]
 
     fig.update_layout(
-        title=f"Squad Field View - Window {selected_window}",
+        title=None,
         width=None,
         height=PITCH_FIG_HEIGHT,
-        margin=dict(l=20, r=20, t=60, b=20),
+        margin=dict(l=0, r=0, t=0, b=0),
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
         font=dict(color="#1F2937"),
         xaxis=dict(
-            range=[-2, PLOT_X_MAX],
+            range=[0, PLOT_X_MAX],
             showgrid=False,
             zeroline=False,
             showticklabels=False,
             visible=False,
             fixedrange=True,
-            constrain="domain",
+            # Removido constrain="domain" para não forçar o esticamento
         ),
         yaxis=dict(
-            range=[-6, 104],
+            range=[-6, 106],
             showgrid=False,
             zeroline=False,
             showticklabels=False,
             visible=False,
             fixedrange=True,
+            # Garante que 1 unidade de Y tenha o mesmo tamanho de pixel que 1 unidade de X
             scaleanchor="x",
             scaleratio=1,
         ),
         shapes=shapes,
         annotations=[
+            dict(x=(FIELD_X_MAX / 2), y=103, text="<b>STARTING XI</b>", showarrow=False, font=dict(size=14, color="#111827"), xanchor="center"),
             dict(x=(RESERVE_PANEL_X0 + 2), y=103, text="<b>RESERVES</b>", showarrow=False, font=dict(size=14, color="#111827"), xanchor="left"),
         ],
     )
@@ -726,11 +759,11 @@ def build_squad_profile_radar(
     scale_bounds: dict[str, tuple[float, float]] | None = None,
 ) -> tuple[go.Figure, pd.DataFrame]:
     categories = [
-        "Média de OVR",
-        "Potencial de Revenda",
-        "Idade Média",
-        "Entrosamento Total",
-        "Custo Salarial",
+        "Average OVR",
+        "Resale Potential",
+        "Average Age",
+        "Total Chemistry",
+        "Wage Cost",
     ]
 
     selected_metrics = _compute_squad_profile_metrics(selected_df)
@@ -788,11 +821,11 @@ def build_squad_profile_radar(
             r=sel_r,
             theta=theta,
             fill="toself",
-            name=f"Nó {selected_node}",
+            name=f"Node {selected_node}",
             line=dict(color="#F39C12", width=2),
             fillcolor="rgba(243, 156, 18, 0.25)",
             customdata=sel_raw_fmt + [sel_raw_fmt[0]],
-            hovertemplate=f"%{{theta}}<br>Nó {selected_node}: %{{customdata}}<extra></extra>",
+            hovertemplate=f"%{{theta}}<br>Node {selected_node}: %{{customdata}}<extra></extra>",
         )
     )
     fig.add_trace(
@@ -800,16 +833,16 @@ def build_squad_profile_radar(
             r=sib_r,
             theta=theta,
             fill="toself",
-            name=f"Nó {sibling_node}",
+            name=f"Node {sibling_node}",
             line=dict(color="#2AA198", width=2),
             fillcolor="rgba(42, 161, 152, 0.25)",
             customdata=sib_raw_fmt + [sib_raw_fmt[0]],
-            hovertemplate=f"%{{theta}}<br>Nó {sibling_node}: %{{customdata}}<extra></extra>",
+            hovertemplate=f"%{{theta}}<br>Node {sibling_node}: %{{customdata}}<extra></extra>",
         )
     )
 
     fig.update_layout(
-        title=f"Perfil do Elenco Titular: Nó {selected_node} vs Nó {sibling_node}",
+        title=f"Starting XI Profile: Node {selected_node} vs Node {sibling_node}",
         height=max(260, chart_height),
         margin=dict(l=12, r=12, t=50, b=12),
         paper_bgcolor="rgba(0,0,0,0)",
@@ -825,41 +858,83 @@ def build_squad_profile_radar(
 
     metrics_table = pd.DataFrame(
         {
-            "Métrica": categories,
-            f"Nó {selected_node}": sel_raw_fmt,
-            f"Nó {sibling_node}": sib_raw_fmt,
+            "Metric": categories,
+            f"Node {selected_node}": sel_raw_fmt,
+            f"Node {sibling_node}": sib_raw_fmt,
         }
     )
     return fig, metrics_table
 
 
 def render_sold_players_table(sold_players_df: pd.DataFrame) -> None:
-    st.subheader("Saídas do Elenco")
-    if sold_players_df.empty:
-        st.info("Sem vendas neste nó.")
+    st.subheader("Squad Exits")
+    sold_table = _build_sold_players_table(sold_players_df)
+    if sold_table.empty:
+        st.info("No sales in this node.")
         return
+
+    st.dataframe(sold_table, width="stretch", hide_index=True)
+
+
+def _build_sold_players_table(sold_players_df: pd.DataFrame) -> pd.DataFrame:
+    if sold_players_df is None or sold_players_df.empty:
+        return pd.DataFrame(columns=["Player", "Position", "OVR", "Nationality", "Foreign", "Sale Value", "Salary"])
 
     sold_cols = ["name", "pos_group", "ovr", "nationality", "is_foreign", "market_value", "wage"]
     sold_table = sold_players_df[[col for col in sold_cols if col in sold_players_df.columns]].copy()
     sold_table = sold_table.rename(
         columns={
-            "name": "Jogador",
-            "pos_group": "Pos",
+            "name": "Player",
+            "pos_group": "Position",
             "ovr": "OVR",
-            "nationality": "Nacionalidade",
-            "is_foreign": "Estrangeiro",
-            "market_value": "Valor de Venda",
-            "wage": "Salário",
+            "nationality": "Nationality",
+            "is_foreign": "Foreign",
+            "market_value": "Sale Value",
+            "wage": "Salary",
         }
     )
-    if "Nacionalidade" in sold_table.columns:
-        sold_table["Nacionalidade"] = sold_table["Nacionalidade"].fillna("").astype(str).str.strip()
-        sold_table.loc[sold_table["Nacionalidade"] == "", "Nacionalidade"] = "Unknown"
-    if "Estrangeiro" in sold_table.columns:
-        sold_table["Estrangeiro"] = sold_table["Estrangeiro"].apply(_foreign_status_text)
-    sold_table["Valor de Venda"] = pd.to_numeric(sold_table["Valor de Venda"], errors="coerce").fillna(0.0).apply(_money_millions)
-    sold_table["Salário"] = pd.to_numeric(sold_table["Salário"], errors="coerce").fillna(0.0).apply(_money_thousands)
-    st.dataframe(sold_table, width="stretch", hide_index=True)
+    if "Nationality" in sold_table.columns:
+        sold_table["Nationality"] = sold_table["Nationality"].fillna("").astype(str).str.strip()
+        sold_table.loc[sold_table["Nationality"] == "", "Nationality"] = "Unknown"
+    if "Foreign" in sold_table.columns:
+        sold_table["Foreign"] = sold_table["Foreign"].apply(_foreign_status_text)
+    sold_table["Sale Value"] = pd.to_numeric(sold_table["Sale Value"], errors="coerce").fillna(0.0).apply(_money_millions)
+    sold_table["Salary"] = pd.to_numeric(sold_table["Salary"], errors="coerce").fillna(0.0).apply(_money_thousands)
+    return sold_table
+
+
+def _render_compact_finance_kpi(
+    label: str,
+    value: str,
+    delta: str | None = None,
+    delta_tone: str = "neutral",
+) -> None:
+    delta_html = ""
+    tone_map = {
+        "positive": ("#E8F8EE", "#0B6E1A"),
+        "negative": ("#FDECEC", "#A61E1E"),
+        "neutral": ("#E5E7EB", "#374151"),
+    }
+    bg_color, fg_color = tone_map.get(delta_tone, tone_map["neutral"])
+
+    if delta is not None and str(delta).strip() != "":
+        delta_html = (
+            "<div style='margin-top:0.3rem;'>"
+            f"<span style='display:inline-block;padding:0.2rem 0.55rem;border-radius:999px;"
+            f"font-size:0.86rem;font-weight:700;background:{bg_color};color:{fg_color};'>{delta}</span>"
+            "</div>"
+        )
+
+    st.markdown(
+        (
+            "<div style='padding:0.25rem 0 0.65rem 0;'>"
+            f"<div style='font-size:0.95rem;font-weight:600;color:#4B5563;margin-bottom:0.1rem;'>{label}</div>"
+            f"<div style='font-size:2.05rem;line-height:1.1;font-weight:700;color:#111827;'>{value}</div>"
+            f"{delta_html}"
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
 
 
 def render_finance_snapshot_cards(finance: dict, salary_cap_eur: float | None) -> None:
@@ -889,34 +964,75 @@ def render_finance_snapshot_cards(finance: dict, salary_cap_eur: float | None) -
         c4.caption(f"Cap: {_money_thousands(float(salary_cap_eur))}")
 
 
-def render_financial_metrics(finance: dict, current_payroll_eur: float, salary_cap_eur: float | None) -> None:
-    st.subheader("Status Financeiro")
+def render_financial_metrics(
+    finance: dict,
+    current_payroll_eur: float,
+    salary_cap_eur: float | None,
+    sold_players_df: pd.DataFrame | None = None,
+) -> None:
+    # st.subheader("Status Financeiro")
 
     budget_before = float(finance.get("budget_before_eur", finance.get("cash", 0.0)))
     budget_after = float(finance.get("budget_after_eur", budget_before))
     payroll_before = float(finance.get("payroll_before_eur", current_payroll_eur))
     payroll_after = float(finance.get("payroll_after_eur", current_payroll_eur))
+    budget_delta = budget_after - budget_before
+    payroll_delta = payroll_after - payroll_before
+    sold_table = _build_sold_players_table(sold_players_df)
 
-    st.metric("Orçamento (Antes)", _money_millions(budget_before))
-    st.metric("Orçamento (Depois)", _money_millions(budget_after), delta=_signed_millions(budget_after - budget_before))
+    with st.container(border=True):
+        st.markdown('<div class="logical-surface-marker logical-finance-group"></div>', unsafe_allow_html=True)
+        col_sales, col_metrics = st.columns([1.35, 1.15], gap="medium")
 
-    if salary_cap_eur is None:
-        st.metric("Folha (Antes)", _money_thousands(payroll_before))
-        st.metric("Folha (Depois)", _money_thousands(payroll_after), delta=_signed_thousands(payroll_after - payroll_before))
-    else:
-        salary_gap = payroll_after - float(salary_cap_eur)
-        st.metric("Folha (Antes)", _money_thousands(payroll_before))
-        st.metric(
-            "Folha (Depois)",
-            _money_thousands(payroll_after),
-            delta=f"{_signed_thousands(salary_gap)} vs cap",
-            delta_color="inverse",
-        )
+        with col_sales:
+            if sold_table.empty:
+                st.info("No sales in this node.")
+            else:
+                compact_cols = [col for col in ["Player", "Position", "OVR", "Sale Value"] if col in sold_table.columns]
+                sold_table_compact = sold_table[compact_cols].copy() if compact_cols else sold_table
+                st.dataframe(sold_table_compact, width="stretch", height=290, hide_index=True)
+
+        with col_metrics:
+            row_top_left, row_top_right = st.columns(2, gap="medium")
+            with row_top_left:
+                _render_compact_finance_kpi("Budget Received", _money_millions(budget_before))
+
+            with row_top_right:
+                budget_tone = "positive" if budget_delta > 0 else ("negative" if budget_delta < 0 else "neutral")
+                _render_compact_finance_kpi(
+                    "Final Balance",
+                    _money_millions(budget_after),
+                    delta=_signed_millions(budget_delta),
+                    delta_tone=budget_tone,
+                )
+
+            row_bottom_left, row_bottom_right = st.columns(2, gap="medium")
+            with row_bottom_left:
+                _render_compact_finance_kpi("Inherited Payroll", _money_thousands(payroll_before))
+
+            with row_bottom_right:
+                if salary_cap_eur is None:
+                    payroll_tone = "positive" if payroll_delta > 0 else ("negative" if payroll_delta < 0 else "neutral")
+                    _render_compact_finance_kpi(
+                        "Post-Decision Payroll",
+                        _money_thousands(payroll_after),
+                        delta=_signed_thousands(payroll_delta),
+                        delta_tone=payroll_tone,
+                    )
+                else:
+                    salary_gap = payroll_after - float(salary_cap_eur)
+                    gap_tone = "negative" if salary_gap > 0 else ("positive" if salary_gap < 0 else "neutral")
+                    _render_compact_finance_kpi(
+                        "Post-Decision Payroll",
+                        _money_thousands(payroll_after),
+                        delta=f"{_signed_thousands(salary_gap)} vs cap",
+                        delta_tone=gap_tone,
+                    )
 
 
 def render_sibling_diff(diff_tbl: pd.DataFrame) -> None:
     if diff_tbl.empty:
-        st.info("Sem diferenças de decisão entre os nós comparados.")
+        st.info("No decision differences between the compared nodes.")
     else:
         st.dataframe(_style_sibling_diff(diff_tbl), width="stretch", hide_index=True)
 

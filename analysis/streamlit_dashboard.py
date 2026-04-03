@@ -1,7 +1,10 @@
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from dashboard_logic import (
+    MINI_TREE_HEIGHT_RATIO,
+    PITCH_FIG_HEIGHT,
     _build_sibling_choices,
     _estimate_salary_cap_eur,
     _get_sibling_node_ids,
@@ -14,6 +17,7 @@ from dashboard_logic import (
     load_compliance_data,
     summarize_compliance_for_selection,
     summarize_financial_before_after,
+    summarize_post_decision_compliance,
 )
 from dashboard_visuals import (
     _build_node_label,
@@ -24,17 +28,173 @@ from dashboard_visuals import (
     build_squad_profile_radar,
     build_window_tables,
     render_compliance_panel,
-    render_finance_snapshot_cards,
     render_financial_metrics,
     render_main_metrics,
     render_sibling_diff,
-    render_sold_players_table,
     render_starters_and_reserves,
 )
 
 
+def _inject_transparent_container_css() -> None:
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stVerticalBlockBorderWrapper"]:has(.logical-surface-marker) {
+            background-color: rgba(0, 0, 0, 0) !important;
+            border: 1px solid rgba(100, 116, 139, 0.22) !important;
+            box-shadow: none !important;
+        }
+
+        [data-theme="dark"] div[data-testid="stVerticalBlockBorderWrapper"]:has(.logical-surface-marker) {
+            border-color: rgba(226, 232, 240, 0.28) !important;
+        }
+
+        div[data-testid="stVerticalBlockBorderWrapper"]:has(.logical-surface-marker) > div[data-testid="stVerticalBlock"] {
+            padding: 0 !important;
+            gap: 0.3rem !important;
+        }
+
+        div[data-testid="stVerticalBlockBorderWrapper"]:has(.logical-surface-marker) .stPlotlyChart {
+            margin: 0 !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_container_capture_button(target_marker_id: str, filename_prefix: str) -> None:
+        safe_target_id = str(target_marker_id).replace('"', "")
+        safe_filename = str(filename_prefix).replace('"', "")
+
+        components.html(
+                f"""
+                <div style="display:flex;justify-content:flex-end;align-items:center;gap:0.5rem;margin:0.15rem 0 0.35rem 0;">
+                    <button id="capture-container-btn" type="button" title="Capture block" style="
+                            border:1px solid #D1D5DB;
+                            background:rgba(255,255,255,0.72);
+                            color:#111827;
+                            border-radius:8px;
+                            padding:0.22rem 0.58rem;
+                            font-size:0.86rem;
+                            font-weight:600;
+                            cursor:pointer;
+                    ">📷 Capture block</button>
+                    <span id="capture-container-status" style="font-size:0.78rem;color:#6B7280;"></span>
+                </div>
+                <script>
+                    (function() {{
+                        const targetId = "{safe_target_id}";
+                        const filePrefix = "{safe_filename}";
+                        const btn = document.getElementById("capture-container-btn");
+                        const statusEl = document.getElementById("capture-container-status");
+
+                        function setStatus(message, color) {{
+                            if (!statusEl) return;
+                            statusEl.textContent = message || "";
+                            statusEl.style.color = color || "#6B7280";
+                        }}
+
+                        function resolveTarget() {{
+                            const marker = window.parent.document.getElementById(targetId);
+                            if (!marker) return null;
+                            return marker.closest('div[data-testid="stVerticalBlockBorderWrapper"]')
+                                || marker.closest('div[data-testid="stVerticalBlock"]')
+                                || marker.parentElement;
+                        }}
+
+                        function loadHtml2Canvas() {{
+                            return new Promise((resolve, reject) => {{
+                                if (window.parent.html2canvas) {{
+                                    resolve(window.parent.html2canvas);
+                                    return;
+                                }}
+
+                                const existing = window.parent.document.querySelector('script[data-capture-lib="html2canvas"]');
+                                if (existing) {{
+                                    existing.addEventListener('load', () => resolve(window.parent.html2canvas), {{ once: true }});
+                                    existing.addEventListener('error', () => reject(new Error('load_error')), {{ once: true }});
+                                    return;
+                                }}
+
+                                const script = window.parent.document.createElement('script');
+                                script.src = 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js';
+                                script.async = true;
+                                script.setAttribute('data-capture-lib', 'html2canvas');
+                                script.onload = () => resolve(window.parent.html2canvas);
+                                script.onerror = () => reject(new Error('load_error'));
+                                window.parent.document.head.appendChild(script);
+                            }});
+                        }}
+
+                        function ensureBorderlessCaptureStyle() {{
+                            const styleId = 'capture-borderless-style';
+                            let styleEl = window.parent.document.getElementById(styleId);
+                            if (styleEl) return;
+
+                            styleEl = window.parent.document.createElement('style');
+                            styleEl.id = styleId;
+                            styleEl.textContent = `
+                                .capture-borderless-active,
+                                .capture-borderless-active div[data-testid="stVerticalBlockBorderWrapper"] {{
+                                    border-color: rgba(0,0,0,0) !important;
+                                    border-width: 0 !important;
+                                    box-shadow: none !important;
+                                }}
+                            `;
+                            window.parent.document.head.appendChild(styleEl);
+                        }}
+
+                        if (!btn) return;
+
+                        btn.addEventListener('click', async () => {{
+                            btn.disabled = true;
+                            setStatus('Capturing...', '#6B7280');
+
+                            try {{
+                                const html2canvas = await loadHtml2Canvas();
+                                const target = resolveTarget();
+                                if (!target) throw new Error('target_not_found');
+
+                                ensureBorderlessCaptureStyle();
+                                target.classList.add('capture-borderless-active');
+
+                                const canvas = await html2canvas(target, {{
+                                    backgroundColor: null,
+                                    scale: 2,
+                                    useCORS: true,
+                                    logging: false,
+                                }});
+
+                                const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+                                const a = window.parent.document.createElement('a');
+                                a.href = canvas.toDataURL('image/png');
+                                a.download = `${{filePrefix}}_${{stamp}}.png`;
+                                window.parent.document.body.appendChild(a);
+                                a.click();
+                                a.remove();
+
+                                setStatus('PNG generated.', '#0B6E1A');
+                            }} catch (e) {{
+                                setStatus('Capture failed.', '#A61E1E');
+                            }} finally {{
+                                const target = resolveTarget();
+                                if (target) {{
+                                    target.classList.remove('capture-borderless-active');
+                                }}
+                                btn.disabled = false;
+                            }}
+                        }});
+                    }})();
+                </script>
+                """,
+                height=50,
+        )
+
+
 def main() -> None:
     st.set_page_config(page_title="Squad Field Dashboard", page_icon="⚽", layout="wide")
+    _inject_transparent_container_css()
 
     mode_label = st.sidebar.selectbox(
         "Result Mode",
@@ -49,13 +209,6 @@ def main() -> None:
         help="Manual mode uses MANUAL_RADAR_LIMITS in dashboard_logic.py.",
     )
     radar_scale_mode_key = "manual" if radar_scale_mode.startswith("Manual") else "auto"
-    main_layout_mode = st.sidebar.selectbox(
-        "Main Block Layout",
-        options=["Adaptive Grid", "Stacked"],
-        index=0,
-        help="Use Stacked mode on smaller screens.",
-    )
-    main_layout_mode_key = "stacked" if main_layout_mode.startswith("Stacked") else "grid"
 
     try:
         decisions, budget, formation, tree_meta, is_stochastic, selected_mode = load_data(preferred_mode)
@@ -184,6 +337,7 @@ def main() -> None:
         compliance_df,
         selected_window,
         selected_node if is_stochastic else None,
+        budget_df=budget,
     )
     if not compliance_summary_df.empty:
         violations_count = int(compliance_summary_df["violations"].sum())
@@ -200,7 +354,7 @@ def main() -> None:
         try:
             st.plotly_chart(
                 tree_fig,
-                use_container_width=True,
+                width="stretch",
                 key=tree_key,
                 on_select="rerun",
                 selection_mode="points",
@@ -217,37 +371,23 @@ def main() -> None:
                     st.session_state[pending_node_key] = int(clicked_node)
                 st.rerun()
         except TypeError:
-            st.plotly_chart(tree_fig, use_container_width=True)
+            st.plotly_chart(tree_fig, width="stretch")
 
     if show_tree_sidebar:
-        if main_layout_mode_key == "stacked":
-            pitch_fig = build_pitch_figure(window_df, selected_window, scheme)
-            st.plotly_chart(pitch_fig, use_container_width=True)
+        capture_marker_id = f"main_block_capture_stage_{selected_window}_node_{int(selected_node)}"
+        capture_filename = f"main_block_stage_{selected_window}_node_{int(selected_node)}"
+        _render_container_capture_button(capture_marker_id, capture_filename)
 
-            mini_tree_height = 420
-            tree_fig = build_scenario_tree_figure(
-                prepared_tree_meta,
-                selected_node,
-                selected_window,
-                mini_mode=True,
-                mini_height=mini_tree_height,
-            )
-            _render_tree_panel(tree_fig, "scenario_tree_minimap_stacked")
+        with st.container(border=True):
+            st.markdown(f'<div id="{capture_marker_id}" class="logical-surface-marker logical-main-group"></div>', unsafe_allow_html=True)
+            col_visual, col_info = st.columns([0.55, 0.5], gap="medium")
 
-            tab_finance, tab_sales = st.tabs(["Status Financeiro", "Saidas do Elenco"])
-            with tab_finance:
-                render_financial_metrics(finance, current_payroll_eur, salary_cap_eur)
-            with tab_sales:
-                render_sold_players_table(sold_players_df)
-        else:
-            main_col, side_col = st.columns([2.6, 1.7], gap="medium")
-
-            with main_col:
+            with col_visual:
                 pitch_fig = build_pitch_figure(window_df, selected_window, scheme)
-                st.plotly_chart(pitch_fig, use_container_width=True)
+                st.plotly_chart(pitch_fig, width="stretch")
 
-            with side_col:
-                mini_tree_height = int(760 * 0.56)
+            with col_info:
+                mini_tree_height = int(PITCH_FIG_HEIGHT * MINI_TREE_HEIGHT_RATIO)
                 tree_fig = build_scenario_tree_figure(
                     prepared_tree_meta,
                     selected_node,
@@ -257,11 +397,7 @@ def main() -> None:
                 )
                 _render_tree_panel(tree_fig, "scenario_tree_minimap")
 
-                tab_finance, tab_sales = st.tabs(["Status Financeiro", "Saidas do Elenco"])
-                with tab_finance:
-                    render_financial_metrics(finance, current_payroll_eur, salary_cap_eur)
-                with tab_sales:
-                    render_sold_players_table(sold_players_df)
+                render_financial_metrics(finance, current_payroll_eur, salary_cap_eur, sold_players_df)
 
         sibling_ids = _get_sibling_node_ids(prepared_tree_meta, selected_node)
         sibling_options: list[str] = []
@@ -284,7 +420,7 @@ def main() -> None:
                 active_sibling = int(st.session_state[sibling_state_key])
                 selected_sibling_index = max(0, sibling_option_ids.index(active_sibling))
                 selected_sibling_label = st.selectbox(
-                    "Nó Irmão",
+                    "Sibling Node",
                     options=sibling_options,
                     index=selected_sibling_index,
                     key=f"sibling_compare_box_{selected_window}_{selected_node}",
@@ -306,10 +442,10 @@ def main() -> None:
                 diff_tbl = build_sibling_diff_table(window_df.copy(), sibling_df.copy())
                 render_sibling_diff(diff_tbl)
             else:
-                st.info("Não há nó irmão disponível para comparação neste estágio.")
+                st.info("No sibling node available for comparison at this stage.")
 
         with col_radar:
-            st.subheader("Visualização de Radar")
+            st.subheader("Radar View")
             if selected_sibling_node is not None and not sibling_df.empty:
                 scale_node_ids = (
                     stage_meta["node_id"].dropna().astype(int).tolist()
@@ -332,18 +468,113 @@ def main() -> None:
                     chart_height=320,
                     scale_bounds=scale_bounds,
                 )
-                st.plotly_chart(radar_fig, use_container_width=True)
-                st.caption("Escala normalizada de 0 a 100 por métrica; tabela com valores absolutos.")
+                st.plotly_chart(radar_fig, width="stretch")
+                st.caption("Normalized 0-100 scale per metric; table shows absolute values.")
                 if radar_scale_mode_key == "manual":
-                    st.caption("Escala fixa do radar ativa. Edite MANUAL_RADAR_LIMITS em dashboard_logic.py para ajustar.")
+                    st.caption("Fixed radar scale is active. Edit MANUAL_RADAR_LIMITS in dashboard_logic.py to adjust.")
                 st.dataframe(radar_tbl, width="stretch", hide_index=True)
             else:
-                st.info("Selecione um nó irmão para exibir o radar comparativo.")
-    else:
-        pitch_fig = build_pitch_figure(window_df, selected_window, scheme)
-        st.plotly_chart(pitch_fig, use_container_width=True)
+                st.info("Select a sibling node to display the comparative radar.")
 
-    render_finance_snapshot_cards(finance, salary_cap_eur)
+        compliance_node_panel = selected_node
+        if is_stochastic and not stage_meta.empty and "node_id" in stage_meta.columns:
+            compliance_node_ids = stage_meta["node_id"].dropna().astype(int).tolist()
+            if compliance_node_ids:
+                compliance_state_key = f"compliance_node_stage_{selected_window}"
+                default_node = int(selected_node) if selected_node in compliance_node_ids else compliance_node_ids[0]
+                if compliance_state_key not in st.session_state or int(st.session_state[compliance_state_key]) not in compliance_node_ids:
+                    st.session_state[compliance_state_key] = default_node
+
+                selected_compliance_idx = max(0, compliance_node_ids.index(int(st.session_state[compliance_state_key])))
+                compliance_node_panel = int(
+                    st.selectbox(
+                        "Compliance Node",
+                        options=compliance_node_ids,
+                        index=selected_compliance_idx,
+                        key=f"compliance_node_select_{selected_window}",
+                    )
+                )
+                st.session_state[compliance_state_key] = compliance_node_panel
+
+        compliance_view_mode = st.selectbox(
+            "Compliance View",
+            options=[
+                "Pre-decision (model state)",
+                "Post-decision (after node decisions)",
+                "Both",
+            ],
+            index=0,
+            key=f"compliance_view_mode_{selected_window}",
+        )
+
+        pre_detail_panel, pre_summary_panel = summarize_compliance_for_selection(
+            compliance_df,
+            selected_window,
+            compliance_node_panel if is_stochastic else None,
+            budget_df=budget,
+        )
+
+        compliance_window_df = decisions[decisions["window"] == selected_window].copy()
+        compliance_form_window = formation[formation["window"] == selected_window].copy()
+        if is_stochastic and compliance_node_panel is not None:
+            if "node_id" in compliance_window_df.columns:
+                compliance_window_df = compliance_window_df[compliance_window_df["node_id"] == compliance_node_panel].copy()
+            if "node_id" in compliance_form_window.columns:
+                compliance_form_window = compliance_form_window[compliance_form_window["node_id"] == compliance_node_panel].copy()
+
+        compliance_window_df = _with_post_decision_squad(compliance_window_df)
+        compliance_window_df = _with_display_best_xi(compliance_window_df, compliance_form_window)
+        compliance_finance = summarize_financial_before_after(
+            compliance_window_df,
+            budget,
+            selected_window,
+            compliance_node_panel if is_stochastic else None,
+        )
+        post_detail_panel, post_summary_panel = summarize_post_decision_compliance(
+            compliance_window_df,
+            compliance_form_window,
+            salary_cap_eur,
+            finance=compliance_finance,
+        )
+
+        if compliance_view_mode.startswith("Pre-decision"):
+            st.caption("Pre-decision view uses model state variables before current-node buy/sell execution.")
+            render_compliance_panel(pre_summary_panel, pre_detail_panel)
+        elif compliance_view_mode.startswith("Post-decision"):
+            st.caption("Post-decision view is an analytical estimate using in_squad + bought - sold at the selected node.")
+            render_compliance_panel(post_summary_panel, post_detail_panel)
+        else:
+            st.caption("Both views shown together: pre-decision (model state) and post-decision (analytical estimate).")
+
+            pre_detail_both = pre_detail_panel.copy()
+            pre_detail_both["compliance_view"] = "pre"
+            post_detail_both = post_detail_panel.copy()
+            post_detail_both["compliance_view"] = "post"
+            detail_both = pd.concat([pre_detail_both, post_detail_both], axis=0, ignore_index=True)
+            if not detail_both.empty:
+                detail_cols = ["compliance_view", "constraint_name", "pos_group", "slack_value", "is_violated", "constraint_modeled"]
+                detail_both = detail_both[[col for col in detail_cols if col in detail_both.columns]]
+
+            pre_summary_both = pre_summary_panel.copy()
+            pre_summary_both["compliance_view"] = "pre"
+            post_summary_both = post_summary_panel.copy()
+            post_summary_both["compliance_view"] = "post"
+            summary_both = pd.concat([pre_summary_both, post_summary_both], axis=0, ignore_index=True)
+            if not summary_both.empty:
+                summary_cols = ["compliance_view", "constraint_name", "total_rows", "violations", "max_slack", "total_slack"]
+                summary_both = summary_both[[col for col in summary_cols if col in summary_both.columns]]
+
+            render_compliance_panel(summary_both, detail_both)
+    else:
+        capture_marker_id = f"main_block_capture_window_{selected_window}"
+        capture_filename = f"main_block_window_{selected_window}"
+        _render_container_capture_button(capture_marker_id, capture_filename)
+
+        with st.container(border=True):
+            st.markdown(f'<div id="{capture_marker_id}" class="logical-surface-marker logical-main-group"></div>', unsafe_allow_html=True)
+            pitch_fig = build_pitch_figure(window_df, selected_window, scheme)
+            st.plotly_chart(pitch_fig, width="stretch")
+            render_financial_metrics(finance, current_payroll_eur, salary_cap_eur, sold_players_df)
 
     scheme_label = scheme if selected_node is None else f"{scheme} | Node {selected_node}"
     render_main_metrics(scheme_label, finance)
@@ -381,33 +612,6 @@ def main() -> None:
 
     starters_tbl, reserves_tbl = build_window_tables(window_df)
     render_starters_and_reserves(starters_tbl, reserves_tbl)
-
-    compliance_node = selected_node if is_stochastic else None
-    if is_stochastic and not stage_meta.empty and "node_id" in stage_meta.columns:
-        compliance_node_ids = stage_meta["node_id"].dropna().astype(int).tolist()
-        if compliance_node_ids:
-            compliance_state_key = f"compliance_node_stage_{selected_window}"
-            default_node = int(selected_node) if selected_node in compliance_node_ids else compliance_node_ids[0]
-            if compliance_state_key not in st.session_state or int(st.session_state[compliance_state_key]) not in compliance_node_ids:
-                st.session_state[compliance_state_key] = default_node
-
-            selected_compliance_idx = max(0, compliance_node_ids.index(int(st.session_state[compliance_state_key])))
-            compliance_node = int(
-                st.selectbox(
-                    "Compliance Node",
-                    options=compliance_node_ids,
-                    index=selected_compliance_idx,
-                    key=f"compliance_node_select_{selected_window}",
-                )
-            )
-            st.session_state[compliance_state_key] = compliance_node
-
-    compliance_detail_panel, compliance_summary_panel = summarize_compliance_for_selection(
-        compliance_df,
-        selected_window,
-        compliance_node if is_stochastic else None,
-    )
-    render_compliance_panel(compliance_summary_panel, compliance_detail_panel)
 
     st.markdown("---")
     st.code("streamlit run analysis/streamlit_dashboard.py", language="bash")

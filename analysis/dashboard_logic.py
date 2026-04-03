@@ -22,7 +22,7 @@ EXPERIMENT_CONFIG_PATH = ROOT / "config" / "experiment.toml"
 DET_RESULT_PATHS = [SQUAD_DECISIONS_PATH, BUDGET_EVOLUTION_PATH]
 STOCH_RESULT_PATHS = [SQUAD_DECISIONS_NODES_PATH, BUDGET_EVOLUTION_NODES_PATH]
 
-FIELD_WIDTH_RATIO = 0.65
+FIELD_WIDTH_RATIO = 0.56
 BASE_FIELD_X_SCALE = 1.15
 FIELD_X_SCALE = BASE_FIELD_X_SCALE * FIELD_WIDTH_RATIO
 FIELD_X_MAX = 100 * FIELD_X_SCALE
@@ -34,7 +34,7 @@ RESERVE_LEFT_TEXT_X = RESERVE_PANEL_X0 + 2
 RESERVE_OVR_X = RESERVE_PANEL_X1 - 4
 RESERVE_EVO_X = RESERVE_OVR_X - 2
 PLOT_X_MAX = RESERVE_PANEL_X1 + 4
-PITCH_FIG_HEIGHT = 760
+PITCH_FIG_HEIGHT = 820
 MINI_TREE_HEIGHT_RATIO = 0.56
 
 POSITION_PRIORITY = {
@@ -84,11 +84,11 @@ FORMATION_POSITION_COORDS = {
 # Hand-picked radar limits used when scale mode is set to manual.
 # Keep these values explicit for easy editing during slide preparation.
 MANUAL_RADAR_LIMITS: dict[str, tuple[float, float]] = {
-    "Média de OVR": (65.0, 90.0),
-    "Potencial de Revenda": (50e6, 250e6),
-    "Idade Média": (20.0, 36.0),
-    "Entrosamento Total": (6.0, 11.0),
-    "Custo Salarial": (200e3, 900e3),
+    "Average OVR": (65.0, 90.0),
+    "Resale Potential": (50e6, 250e6),
+    "Average Age": (20.0, 36.0),
+    "Total Chemistry": (6.0, 11.0),
+    "Wage Cost": (200e3, 900e3),
 }
 
 
@@ -278,6 +278,93 @@ def _load_salary_cap_multiplier() -> float:
         return float(constraints.get("salary_cap_multiplier_initial", default_multiplier))
     except Exception:
         return default_multiplier
+
+
+@st.cache_data(show_spinner=False)
+def _load_constraint_limits() -> tuple[dict[str, int], int]:
+    default_foreign_limit = 9
+    default_bench_targets = {pos: 0 for pos in POSITION_PRIORITY.keys()}
+
+    if not EXPERIMENT_CONFIG_PATH.exists():
+        return default_bench_targets, default_foreign_limit
+
+    try:
+        with EXPERIMENT_CONFIG_PATH.open("rb") as handle:
+            cfg = tomllib.load(handle)
+
+        constraints = cfg.get("constraints", {})
+        bench_cfg = cfg.get("bench_targets", {})
+
+        foreign_limit = int(constraints.get("foreign_limit", default_foreign_limit))
+
+        bench_targets = dict(default_bench_targets)
+        if isinstance(bench_cfg, dict):
+            for pos, raw_val in bench_cfg.items():
+                key = str(pos).strip().upper()
+                try:
+                    bench_targets[key] = max(0, int(raw_val))
+                except (TypeError, ValueError):
+                    continue
+
+        return bench_targets, max(0, foreign_limit)
+    except Exception:
+        return default_bench_targets, default_foreign_limit
+
+
+def _required_starters_by_position(form_window: pd.DataFrame) -> dict[str, int]:
+    if form_window is None or form_window.empty:
+        return {}
+
+    if not {"pos_group", "required_count"}.issubset(form_window.columns):
+        return {}
+
+    req_series = (
+        form_window[["pos_group", "required_count"]]
+        .dropna(subset=["pos_group", "required_count"])
+        .groupby("pos_group", as_index=True)["required_count"]
+        .max()
+    )
+
+    return {
+        str(pos).strip().upper(): max(0, int(cnt))
+        for pos, cnt in req_series.items()
+    }
+
+
+def _append_budget_deficit_row(
+    df: pd.DataFrame,
+    budget_df: pd.DataFrame | None,
+    window: int,
+    node_id: int | None = None,
+) -> pd.DataFrame:
+    if budget_df is None or budget_df.empty:
+        return df
+
+    if "constraint_name" in df.columns:
+        has_budget_deficit = (df["constraint_name"].astype(str).str.strip() == "budget_deficit").any()
+        if has_budget_deficit:
+            return df
+
+    row = budget_df[budget_df["window"] == int(window)].copy() if "window" in budget_df.columns else budget_df.copy()
+    if node_id is not None and "node_id" in row.columns:
+        row = row[pd.to_numeric(row["node_id"], errors="coerce") == int(node_id)]
+
+    if row.empty or "deficit" not in row.columns:
+        return df
+
+    deficit_val = max(0.0, _safe_float(row.iloc[0].get("deficit", 0.0)))
+    budget_row = pd.DataFrame(
+        [
+            {
+                "constraint_name": "budget_deficit",
+                "pos_group": pd.NA,
+                "slack_value": deficit_val,
+                "is_violated": bool(deficit_val > 1e-8),
+                "constraint_modeled": True,
+            }
+        ]
+    )
+    return pd.concat([df, budget_row], axis=0, ignore_index=True)
 
 
 def _compute_node_payroll_eur(window_df: pd.DataFrame, squad_col: str = "in_squad") -> float:
@@ -808,21 +895,24 @@ def summarize_compliance_for_selection(
     compliance_df: pd.DataFrame,
     window: int,
     node_id: int | None = None,
+    budget_df: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     detail_cols = ["constraint_name", "pos_group", "slack_value", "is_violated", "constraint_modeled"]
     summary_cols = ["constraint_name", "total_rows", "violations", "max_slack", "total_slack"]
 
     if compliance_df is None or compliance_df.empty:
-        return pd.DataFrame(columns=detail_cols), pd.DataFrame(columns=summary_cols)
+        df = pd.DataFrame(columns=detail_cols)
+    else:
+        df = compliance_df.copy()
+        if "window" in df.columns:
+            df["window"] = pd.to_numeric(df["window"], errors="coerce")
+            df = df[df["window"] == int(window)]
 
-    df = compliance_df.copy()
-    if "window" in df.columns:
-        df["window"] = pd.to_numeric(df["window"], errors="coerce")
-        df = df[df["window"] == int(window)]
+        if node_id is not None and "node_id" in df.columns:
+            df["node_id"] = pd.to_numeric(df["node_id"], errors="coerce")
+            df = df[df["node_id"] == int(node_id)]
 
-    if node_id is not None and "node_id" in df.columns:
-        df["node_id"] = pd.to_numeric(df["node_id"], errors="coerce")
-        df = df[df["node_id"] == int(node_id)]
+    df = _append_budget_deficit_row(df, budget_df, window, node_id)
 
     if df.empty:
         return pd.DataFrame(columns=detail_cols), pd.DataFrame(columns=summary_cols)
@@ -845,6 +935,115 @@ def summarize_compliance_for_selection(
 
     summary = (
         df.groupby("constraint_name", dropna=False)
+        .agg(
+            total_rows=("constraint_name", "size"),
+            violations=("is_violated", "sum"),
+            max_slack=("slack_value", "max"),
+            total_slack=("slack_value", "sum"),
+        )
+        .reset_index()
+    )
+    summary["violations"] = pd.to_numeric(summary["violations"], errors="coerce").fillna(0).astype(int)
+    summary = summary.sort_values(by=["violations", "max_slack", "constraint_name"], ascending=[False, False, True])
+
+    return detail, summary[summary_cols]
+
+
+def summarize_post_decision_compliance(
+    window_df: pd.DataFrame,
+    form_window: pd.DataFrame,
+    salary_cap_eur: float | None,
+    finance: dict | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    detail_cols = ["constraint_name", "pos_group", "slack_value", "is_violated", "constraint_modeled"]
+    summary_cols = ["constraint_name", "total_rows", "violations", "max_slack", "total_slack"]
+
+    if window_df is None or window_df.empty:
+        return pd.DataFrame(columns=detail_cols), pd.DataFrame(columns=summary_cols)
+
+    df = window_df.copy()
+    if "in_squad_display" not in df.columns:
+        df = _with_post_decision_squad(df)
+
+    active_flags = pd.to_numeric(df.get("in_squad_display", 0), errors="coerce").fillna(0).astype(int)
+    pos_series = df.get("pos_group", pd.Series(["UNK"] * len(df), index=df.index)).fillna("UNK").astype(str).str.upper()
+
+    required_map = _required_starters_by_position(form_window)
+    bench_targets, foreign_limit = _load_constraint_limits()
+    tracked_positions = sorted(set(POSITION_PRIORITY.keys()) | set(required_map.keys()) | set(bench_targets.keys()))
+
+    rows: list[dict] = []
+    for pos in tracked_positions:
+        players_in_pos = (pos_series == pos)
+        count_pos = int((active_flags[players_in_pos] == 1).sum())
+        max_allowed = int(required_map.get(pos, 0)) + int(bench_targets.get(pos, 0))
+        slack_val = float(max(0, count_pos - max_allowed))
+        rows.append(
+            {
+                "constraint_name": "squad_depth_position",
+                "pos_group": pos,
+                "slack_value": slack_val,
+                "is_violated": bool(slack_val > 1e-8),
+                "constraint_modeled": True,
+            }
+        )
+
+    if salary_cap_eur is None:
+        salary_slack = 0.0
+        salary_modeled = False
+    else:
+        payroll_after = _compute_node_payroll_eur(df, squad_col="in_squad_display")
+        salary_slack = float(max(0.0, payroll_after - float(salary_cap_eur)))
+        salary_modeled = True
+
+    rows.append(
+        {
+            "constraint_name": "salary_cap",
+            "pos_group": pd.NA,
+            "slack_value": salary_slack,
+            "is_violated": bool(salary_slack > 1e-8),
+            "constraint_modeled": salary_modeled,
+        }
+    )
+
+    if "is_foreign" in df.columns:
+        foreign_flags = df["is_foreign"].apply(_coerce_bool_or_none).fillna(False).astype(bool)
+    else:
+        foreign_flags = pd.Series([False] * len(df), index=df.index)
+    foreign_count = int(((active_flags == 1) & foreign_flags).sum())
+    foreign_slack = float(max(0, foreign_count - int(foreign_limit)))
+    rows.append(
+        {
+            "constraint_name": "foreign_squad_limit",
+            "pos_group": pd.NA,
+            "slack_value": foreign_slack,
+            "is_violated": bool(foreign_slack > 1e-8),
+            "constraint_modeled": True,
+        }
+    )
+
+    budget_after = float("nan")
+    if finance is not None:
+        budget_after = _safe_float(finance.get("budget_after_eur", float("nan")), default=float("nan"))
+    budget_slack = 0.0 if pd.isna(budget_after) else float(max(0.0, -budget_after))
+    rows.append(
+        {
+            "constraint_name": "budget_deficit",
+            "pos_group": pd.NA,
+            "slack_value": budget_slack,
+            "is_violated": bool(budget_slack > 1e-8),
+            "constraint_modeled": not pd.isna(budget_after),
+        }
+    )
+
+    detail = pd.DataFrame(rows, columns=detail_cols)
+    detail["slack_value"] = pd.to_numeric(detail["slack_value"], errors="coerce").fillna(0.0)
+    detail["is_violated"] = detail["is_violated"].astype(bool)
+    detail["constraint_modeled"] = detail["constraint_modeled"].astype(bool)
+    detail = detail.sort_values(by=["is_violated", "constraint_name", "pos_group"], ascending=[False, True, True], na_position="last")
+
+    summary = (
+        detail.groupby("constraint_name", dropna=False)
         .agg(
             total_rows=("constraint_name", "size"),
             violations=("is_violated", "sum"),
@@ -986,11 +1185,11 @@ def _compute_squad_profile_metrics(window_df: pd.DataFrame) -> dict[str, float]:
     starters = _starter_slice(window_df)
     if starters.empty:
         return {
-            "Média de OVR": 0.0,
-            "Potencial de Revenda": 0.0,
-            "Idade Média": float("nan"),
-            "Entrosamento Total": 0.0,
-            "Custo Salarial": 0.0,
+            "Average OVR": 0.0,
+            "Resale Potential": 0.0,
+            "Average Age": float("nan"),
+            "Total Chemistry": 0.0,
+            "Wage Cost": 0.0,
         }
 
     starters = _ensure_age_column(starters)
@@ -1004,24 +1203,24 @@ def _compute_squad_profile_metrics(window_df: pd.DataFrame) -> dict[str, float]:
     chemistry_total = float(starters["in_squad"].sum())
 
     return {
-        "Média de OVR": float(starters["ovr"].mean()),
-        "Potencial de Revenda": float(starters["market_value"].sum()),
-        "Idade Média": age_mean,
-        "Entrosamento Total": chemistry_total,
-        "Custo Salarial": float(starters["wage"].sum()),
+        "Average OVR": float(starters["ovr"].mean()),
+        "Resale Potential": float(starters["market_value"].sum()),
+        "Average Age": age_mean,
+        "Total Chemistry": chemistry_total,
+        "Wage Cost": float(starters["wage"].sum()),
     }
 
 
 def _format_profile_metric(metric: str, value: float) -> str:
     if pd.isna(value):
         return "N/A"
-    if metric in {"Média de OVR", "Idade Média"}:
+    if metric in {"Average OVR", "Average Age"}:
         return f"{value:.1f}"
-    if metric == "Potencial de Revenda":
+    if metric == "Resale Potential":
         return _money_millions(float(value))
-    if metric == "Custo Salarial":
+    if metric == "Wage Cost":
         return _money_thousands(float(value))
-    if metric == "Entrosamento Total":
+    if metric == "Total Chemistry":
         return f"{int(round(value))}"
     return f"{value:.2f}"
 
@@ -1033,11 +1232,11 @@ def _compute_profile_scale_bounds(
     node_ids: list[int],
 ) -> dict[str, tuple[float, float]]:
     metrics_bucket: dict[str, list[float]] = {
-        "Média de OVR": [],
-        "Potencial de Revenda": [],
-        "Idade Média": [],
-        "Entrosamento Total": [],
-        "Custo Salarial": [],
+        "Average OVR": [],
+        "Resale Potential": [],
+        "Average Age": [],
+        "Total Chemistry": [],
+        "Wage Cost": [],
     }
 
     for node_id in sorted(set(int(n) for n in node_ids)):
