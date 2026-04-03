@@ -1,4 +1,5 @@
 from pathlib import Path
+import tomllib
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -15,6 +16,7 @@ FORMATION_DIAGNOSTICS_NODES_PATH = OUTPUT_DIR / "formation_diagnostics_nodes.csv
 TREE_METADATA_PATH = OUTPUT_DIR / "tree_metadata.csv"
 PLAYER_NODE_AUDIT_PATH = ROOT / "data" / "processed" / "player_node_audit.csv"
 PROCESSED_PLAYER_DATA_PATH = ROOT / "data" / "processed" / "processed_player_data.csv"
+EXPERIMENT_CONFIG_PATH = ROOT / "config" / "experiment.toml"
 DET_RESULT_PATHS = [SQUAD_DECISIONS_PATH, BUDGET_EVOLUTION_PATH]
 STOCH_RESULT_PATHS = [SQUAD_DECISIONS_NODES_PATH, BUDGET_EVOLUTION_NODES_PATH]
 
@@ -65,11 +67,75 @@ FORMATION_POSITION_COORDS = {
         "RW": [(84, 64)],
         "ST": [(44, 88), (56, 80), (50, 92)],
     },
+    "532": {
+        "GK": [(50, 8)],
+        "CB": [(28, 27), (72, 27), (50, 24)],
+        "LB": [(12, 40)],
+        "RB": [(88, 40)],
+        "CM": [(32, 54), (68, 54), (50, 58)],
+        "LW": [(16, 64)],
+        "RW": [(84, 64)],
+        "ST": [(44, 88), (56, 80), (50, 92)],
+    }
 }
 
 
 def _money_millions(value: float) -> str:
     return f"EUR {value / 1e6:,.1f}M"
+
+
+def _money_thousands(value: float) -> str:
+    return f"EUR {value / 1e3:,.1f}K"
+
+
+@st.cache_data(show_spinner=False)
+def _load_salary_cap_multiplier() -> float:
+    default_multiplier = 1.2
+    if not EXPERIMENT_CONFIG_PATH.exists():
+        return default_multiplier
+
+    try:
+        with EXPERIMENT_CONFIG_PATH.open("rb") as handle:
+            cfg = tomllib.load(handle)
+        constraints = cfg.get("constraints", {})
+        return float(constraints.get("salary_cap_multiplier_initial", default_multiplier))
+    except Exception:
+        return default_multiplier
+
+
+def _compute_node_payroll_eur(window_df: pd.DataFrame, squad_col: str = "in_squad") -> float:
+    if window_df.empty or "wage" not in window_df.columns:
+        return 0.0
+
+    active_col = squad_col if squad_col in window_df.columns else "in_squad"
+    if active_col not in window_df.columns:
+        return 0.0
+
+    active_flags = pd.to_numeric(window_df[active_col], errors="coerce").fillna(0).astype(int)
+    wages = pd.to_numeric(window_df["wage"], errors="coerce").fillna(0.0)
+    return float((wages * active_flags).sum())
+
+
+def _estimate_salary_cap_eur(decisions: pd.DataFrame, is_stochastic: bool) -> float | None:
+    if decisions.empty or "window" not in decisions.columns:
+        return None
+
+    baseline = decisions.copy()
+    baseline["window"] = pd.to_numeric(baseline["window"], errors="coerce")
+    baseline = baseline[baseline["window"] == 0].copy()
+    if baseline.empty:
+        return None
+
+    if is_stochastic and "node_id" in baseline.columns:
+        baseline["node_id"] = pd.to_numeric(baseline["node_id"], errors="coerce")
+        baseline = baseline.dropna(subset=["node_id"])
+        if baseline.empty:
+            return None
+        root_node_id = int(baseline["node_id"].min())
+        baseline = baseline[baseline["node_id"] == root_node_id].copy()
+
+    root_payroll_eur = _compute_node_payroll_eur(baseline, squad_col="in_squad")
+    return root_payroll_eur * _load_salary_cap_multiplier()
 
 
 def _files_exist(paths: list[Path]) -> bool:
@@ -122,6 +188,48 @@ def _safe_int(value) -> int:
     if pd.isna(value):
         return 0
     return int(value)
+
+
+def _safe_float(value, default: float = 0.0) -> float:
+    try:
+        if pd.isna(value):
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+@st.cache_data(show_spinner=False)
+def _load_node_audit_lookup() -> pd.DataFrame:
+    if not PLAYER_NODE_AUDIT_PATH.exists():
+        return pd.DataFrame()
+
+    audit_df = pd.read_csv(PLAYER_NODE_AUDIT_PATH)
+    required_cols = {"node_id", "player_id"}
+    if not required_cols.issubset(audit_df.columns):
+        return pd.DataFrame()
+
+    if "stage" in audit_df.columns and "window" not in audit_df.columns:
+        audit_df = audit_df.rename(columns={"stage": "window"})
+
+    if "window" not in audit_df.columns:
+        return pd.DataFrame()
+
+    for col in ["node_id", "window", "player_id", "starter_allowed", "chemistry_multiplier"]:
+        if col in audit_df.columns:
+            audit_df[col] = pd.to_numeric(audit_df[col], errors="coerce")
+
+    audit_df = audit_df.dropna(subset=["node_id", "window", "player_id"]).copy()
+    audit_df["node_id"] = audit_df["node_id"].astype(int)
+    audit_df["window"] = audit_df["window"].astype(int)
+    audit_df["player_id"] = audit_df["player_id"].astype(int)
+
+    keep_cols = ["node_id", "window", "player_id"]
+    for optional_col in ["starter_allowed", "chemistry_multiplier"]:
+        if optional_col in audit_df.columns:
+            keep_cols.append(optional_col)
+
+    return audit_df[keep_cols].drop_duplicates(subset=["node_id", "window", "player_id"], keep="last")
 
 
 def _evolution_text(curr_ovr: int, prev_ovr: int | None) -> str:
@@ -199,9 +307,20 @@ def _with_post_decision_squad(window_df: pd.DataFrame) -> pd.DataFrame:
     for col in ["in_squad", "bought", "sold"]:
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
 
+    if "bought_in_parent" in df.columns:
+        df["bought_in_parent"] = pd.to_numeric(df["bought_in_parent"], errors="coerce").fillna(0).astype(int)
+    else:
+        df["bought_in_parent"] = 0
+
+    if "bought_from_root" in df.columns:
+        df["bought_from_root"] = pd.to_numeric(df["bought_from_root"], errors="coerce").fillna(0).astype(int)
+    else:
+        df["bought_from_root"] = 0
+
     # Display-only roster after node decisions: in_squad + bought - sold.
     df["in_squad_display"] = (df["in_squad"] + df["bought"] - df["sold"]).clip(lower=0, upper=1).astype(int)
     df["is_new_reinforcement"] = ((df["bought"] == 1) & (df["sold"] == 0)).astype(int)
+    df["is_root_inherited_reinforcement"] = ((df["bought_from_root"] == 1) & (df["is_new_reinforcement"] == 0)).astype(int)
     return df
 
 
@@ -215,16 +334,19 @@ def _with_display_best_xi(window_df: pd.DataFrame, form_window: pd.DataFrame) ->
     if squad.empty:
         return df
 
-    starter_pool = squad.copy()
-    if "is_new_reinforcement" in starter_pool.columns:
-        starter_pool = starter_pool[starter_pool["is_new_reinforcement"] != 1].copy()
-
-    if starter_pool.empty:
-        return df
-
     if "starter_allowed" not in squad.columns:
-        starter_pool["starter_allowed"] = 1
-    starter_pool["starter_allowed"] = pd.to_numeric(starter_pool["starter_allowed"], errors="coerce").fillna(1).astype(int)
+        squad["starter_allowed"] = 1
+    squad["starter_allowed"] = pd.to_numeric(squad["starter_allowed"], errors="coerce").fillna(1).astype(int)
+
+    if "is_new_reinforcement" not in squad.columns:
+        squad["is_new_reinforcement"] = 0
+    squad["is_new_reinforcement"] = pd.to_numeric(squad["is_new_reinforcement"], errors="coerce").fillna(0).astype(int)
+
+    regular_pool = squad[squad["is_new_reinforcement"] != 1].copy()
+    reinforcement_pool = squad[squad["is_new_reinforcement"] == 1].copy()
+
+    if regular_pool.empty and reinforcement_pool.empty:
+        return df
 
     req_map: dict[str, int] = {}
     if not form_window.empty and {"pos_group", "required_count"}.issubset(form_window.columns):
@@ -241,33 +363,63 @@ def _with_display_best_xi(window_df: pd.DataFrame, form_window: pd.DataFrame) ->
         }
 
     if not req_map:
-        req_series = starter_pool.groupby("pos_group", as_index=True)["is_starter"].sum()
+        req_series = squad.groupby("pos_group", as_index=True)["is_starter"].sum()
         req_map = {
             str(pos): int(cnt)
             for pos, cnt in req_series.items()
             if int(cnt) > 0
         }
 
-    target_total = int(sum(req_map.values())) if req_map else min(11, len(starter_pool))
+    target_total = int(sum(req_map.values())) if req_map else min(11, len(squad))
     selected_index: list[int] = []
+
+    def _pick_best(pool: pd.DataFrame, pos: str, need: int, selected: list[int], only_allowed: bool = True) -> list[int]:
+        if need <= 0 or pool.empty:
+            return []
+
+        candidates = pool[pool["pos_group"] == pos].copy()
+        if only_allowed:
+            candidates = candidates[candidates["starter_allowed"] == 1].copy()
+        if candidates.empty:
+            return []
+
+        candidates = candidates.loc[~candidates.index.isin(selected)]
+        if candidates.empty:
+            return []
+
+        candidates = candidates.sort_values(by=["ovr"], ascending=False)
+        return candidates.head(need).index.tolist()
 
     for pos in sorted(req_map.keys(), key=lambda p: POSITION_PRIORITY.get(p, 99)):
         need = int(req_map[pos])
         if need <= 0:
             continue
 
-        pool = starter_pool[(starter_pool["pos_group"] == pos) & (starter_pool["starter_allowed"] == 1)].copy()
-        if pool.empty:
-            pool = starter_pool[starter_pool["pos_group"] == pos].copy()
+        # 1) Prefer regular players available to start.
+        picked = _pick_best(regular_pool, pos, need, selected_index, only_allowed=True)
+        selected_index.extend(picked)
+        remaining_need = need - len(picked)
 
-        if not pool.empty:
-            pool = pool.sort_values(by=["ovr"], ascending=False)
-            selected_index.extend(pool.head(need).index.tolist())
+        # 2) If the position is still uncovered, allow new signings in that same position.
+        if remaining_need > 0:
+            picked = _pick_best(reinforcement_pool, pos, remaining_need, selected_index, only_allowed=True)
+            selected_index.extend(picked)
+            remaining_need -= len(picked)
+
+        # 3) Last-resort display fallback (unavailable players) to keep XI complete when possible.
+        if remaining_need > 0:
+            picked = _pick_best(regular_pool, pos, remaining_need, selected_index, only_allowed=False)
+            selected_index.extend(picked)
+            remaining_need -= len(picked)
+
+        if remaining_need > 0:
+            picked = _pick_best(reinforcement_pool, pos, remaining_need, selected_index, only_allowed=False)
+            selected_index.extend(picked)
 
     selected_index = list(dict.fromkeys(selected_index))
 
     if len(selected_index) < target_total:
-        remaining = starter_pool.loc[~starter_pool.index.isin(selected_index)].copy()
+        remaining = squad.loc[~squad.index.isin(selected_index)].copy()
         remaining["pos_priority"] = remaining["pos_group"].map(POSITION_PRIORITY).fillna(99).astype(int)
 
         preferred = remaining[remaining["starter_allowed"] == 1].sort_values(
@@ -279,17 +431,24 @@ def _with_display_best_xi(window_df: pd.DataFrame, form_window: pd.DataFrame) ->
             ascending=[False, True],
         )
 
+        preferred_regular = preferred[preferred["is_new_reinforcement"] != 1]
+        preferred_new = preferred[preferred["is_new_reinforcement"] == 1]
+        fallback_regular = fallback[fallback["is_new_reinforcement"] != 1]
+        fallback_new = fallback[fallback["is_new_reinforcement"] == 1]
+
         needed = target_total - len(selected_index)
-        extra = preferred.head(needed)
+        extra = preferred_regular.head(needed)
         if len(extra) < needed:
-            extra = pd.concat([extra, fallback.head(needed - len(extra))], axis=0)
+            extra = pd.concat([extra, preferred_new.head(needed - len(extra))], axis=0)
+        if len(extra) < needed:
+            extra = pd.concat([extra, fallback_regular.head(needed - len(extra))], axis=0)
+        if len(extra) < needed:
+            extra = pd.concat([extra, fallback_new.head(needed - len(extra))], axis=0)
 
         selected_index.extend(extra.index.tolist())
         selected_index = list(dict.fromkeys(selected_index))
 
     df.loc[df.index.isin(selected_index), "is_starter_display"] = 1
-    if "is_new_reinforcement" in df.columns:
-        df.loc[df["is_new_reinforcement"] == 1, "is_starter_display"] = 0
     return df
 
 
@@ -357,37 +516,38 @@ def load_data(preferred_mode: str = "auto") -> tuple[pd.DataFrame, pd.DataFrame,
         decisions["origin_league"] = ""
     decisions["origin_league"] = decisions["origin_league"].fillna("")
 
+    node_audit_df = _load_node_audit_lookup() if is_stochastic else pd.DataFrame()
+
     if "starter_allowed" in decisions.columns:
         decisions["starter_allowed"] = pd.to_numeric(decisions["starter_allowed"], errors="coerce").fillna(1).astype(int)
-    elif is_stochastic and PLAYER_NODE_AUDIT_PATH.exists():
-        # Backward-compatibility path for legacy stochastic exports without starter_allowed.
-        injury_df = pd.read_csv(PLAYER_NODE_AUDIT_PATH)
-        required_cols = {"node_id", "player_id", "starter_allowed"}
-        if required_cols.issubset(injury_df.columns):
-            if "stage" in injury_df.columns and "window" not in injury_df.columns:
-                injury_df = injury_df.rename(columns={"stage": "window"})
-
-            injury_df["node_id"] = pd.to_numeric(injury_df["node_id"], errors="coerce")
-            injury_df["window"] = pd.to_numeric(injury_df["window"], errors="coerce")
-            injury_df["player_id"] = pd.to_numeric(injury_df["player_id"], errors="coerce")
-            injury_df["starter_allowed"] = pd.to_numeric(injury_df["starter_allowed"], errors="coerce")
-            injury_df = injury_df.dropna(subset=["node_id", "window", "player_id", "starter_allowed"])
-
-            injury_df["node_id"] = injury_df["node_id"].astype(int)
-            injury_df["window"] = injury_df["window"].astype(int)
-            injury_df["player_id"] = injury_df["player_id"].astype(int)
-            injury_df["starter_allowed"] = injury_df["starter_allowed"].astype(int)
-
-            injury_df = injury_df[["node_id", "window", "player_id", "starter_allowed"]].drop_duplicates(
-                subset=["node_id", "window", "player_id"], keep="last"
-            )
-
-            decisions = decisions.merge(injury_df, on=["node_id", "window", "player_id"], how="left")
-            decisions["starter_allowed"] = decisions["starter_allowed"].fillna(1).astype(int)
-        else:
-            decisions["starter_allowed"] = 1
+    elif is_stochastic and not node_audit_df.empty and "starter_allowed" in node_audit_df.columns:
+        injury_df = node_audit_df[["node_id", "window", "player_id", "starter_allowed"]].copy()
+        injury_df["starter_allowed"] = pd.to_numeric(injury_df["starter_allowed"], errors="coerce")
+        injury_df = injury_df.dropna(subset=["starter_allowed"])
+        injury_df["starter_allowed"] = injury_df["starter_allowed"].astype(int)
+        decisions = decisions.merge(injury_df, on=["node_id", "window", "player_id"], how="left")
+        decisions["starter_allowed"] = decisions["starter_allowed"].fillna(1).astype(int)
     else:
         decisions["starter_allowed"] = 1
+
+    if is_stochastic and not node_audit_df.empty and "chemistry_multiplier" in node_audit_df.columns:
+        chemistry_df = node_audit_df[["node_id", "window", "player_id", "chemistry_multiplier"]].copy()
+        chemistry_df["chemistry_multiplier"] = pd.to_numeric(chemistry_df["chemistry_multiplier"], errors="coerce")
+
+        if "chemistry_multiplier" in decisions.columns:
+            decisions["chemistry_multiplier"] = pd.to_numeric(decisions["chemistry_multiplier"], errors="coerce")
+            decisions = decisions.merge(
+                chemistry_df.rename(columns={"chemistry_multiplier": "chemistry_multiplier_audit"}),
+                on=["node_id", "window", "player_id"],
+                how="left",
+            )
+            decisions["chemistry_multiplier"] = decisions["chemistry_multiplier"].fillna(decisions["chemistry_multiplier_audit"])
+            decisions = decisions.drop(columns=["chemistry_multiplier_audit"], errors="ignore")
+        else:
+            decisions = decisions.merge(chemistry_df, on=["node_id", "window", "player_id"], how="left")
+
+    if "chemistry_multiplier" in decisions.columns:
+        decisions["chemistry_multiplier"] = pd.to_numeric(decisions["chemistry_multiplier"], errors="coerce")
 
     if "injured" in decisions.columns:
         decisions["injured"] = pd.to_numeric(decisions["injured"], errors="coerce").fillna(0).astype(int)
@@ -405,6 +565,11 @@ def _injury_badge(row: pd.Series) -> str:
 def _reinforcement_badge(row: pd.Series) -> str:
     new_signing = int(row.get("is_new_reinforcement", 0)) == 1
     return "<span title='Novo Reforço' style='color:#0E9F6E; font-size:1.2em;'> 🖋</span>" if new_signing else ""
+
+
+def _root_inherited_badge(row: pd.Series) -> str:
+    inherited_root = int(row.get("is_root_inherited_reinforcement", 0)) == 1
+    return "<span title='Comprado na Raiz (Here-and-Now)' style='color:#1D6FD9; font-size:1.15em;'> ↳</span>" if inherited_root else ""
 
 def enrich_with_evolution(decisions: pd.DataFrame, tree_meta: pd.DataFrame | None = None) -> pd.DataFrame:
     df = decisions.copy()
@@ -503,18 +668,31 @@ def build_pitch_figure(window_df: pd.DataFrame, selected_window: int, formation_
         evo_txt = _evolution_text(ovr_now, ovr_prev)
         evo_badge = _evolution_badge(ovr_now, ovr_prev)
         injury_badge = _injury_badge(row)
+        reinforcement_badge = _reinforcement_badge(row)
+        root_inherited_badge = _root_inherited_badge(row)
         injury_status = "Injured" if int(row.get("injured", 0)) == 1 else "Available"
+        if int(row.get("is_new_reinforcement", 0)) == 1:
+            status_txt = "New Signing (Current Node)"
+        elif int(row.get("is_root_inherited_reinforcement", 0)) == 1:
+            status_txt = "Inherited from Root Purchase"
+        else:
+            status_txt = injury_status
         name_short = _display_name(str(row["name"]), max_len=20)
+        salary_txt = _money_thousands(_safe_float(row.get("wage", 0.0)))
+        chemistry_val = row.get("chemistry_multiplier", pd.NA)
+        chemistry_txt = "N/A" if pd.isna(chemistry_val) else f"{_safe_float(chemistry_val):.2f} (nó)"
 
         starter_ovr.append(str(ovr_now))
-        starter_label.append(f"<b>{name_short}</b> {injury_badge} {evo_badge}".strip())
+        starter_label.append(f"<b>{name_short}</b> {injury_badge} {reinforcement_badge} {root_inherited_badge} {evo_badge}".strip())
         starter_hover.append(
             "<br>".join(
                 [
                     f"<b>{row['name']}</b>",
                     f"Position: {pos}",
-                    f"Status: {injury_status}",
+                    f"Status: {status_txt}",
                     f"OVR: {ovr_now} {evo_txt}".strip(),
+                    f"Chemistry: {chemistry_txt}",
+                    f"Salary: {salary_txt}",
                     _origin_text(row),
                     f"Market Value: {_money_millions(float(row['market_value']))}",
                 ]
@@ -533,15 +711,24 @@ def build_pitch_figure(window_df: pd.DataFrame, selected_window: int, formation_
         evo_badge = _evolution_badge(ovr_now, ovr_prev)
         injury_badge = _injury_badge(row)
         reinforcement_badge = _reinforcement_badge(row)
+        root_inherited_badge = _root_inherited_badge(row)
         injury_status = "Injured" if int(row.get("injured", 0)) == 1 else "Available"
-        status_txt = "New Signing" if int(row.get("is_new_reinforcement", 0)) == 1 else injury_status
+        if int(row.get("is_new_reinforcement", 0)) == 1:
+            status_txt = "New Signing (Current Node)"
+        elif int(row.get("is_root_inherited_reinforcement", 0)) == 1:
+            status_txt = "Inherited from Root Purchase"
+        else:
+            status_txt = injury_status
         reserve_name = _display_name(str(row["name"]), max_len=24)
+        salary_txt = _money_thousands(_safe_float(row.get("wage", 0.0)))
+        chemistry_val = row.get("chemistry_multiplier", pd.NA)
+        chemistry_txt = "N/A" if pd.isna(chemistry_val) else f"{_safe_float(chemistry_val):.2f} (nó)"
 
         reserve_left_x.append(RESERVE_LEFT_TEXT_X)
         reserve_evo_x.append(RESERVE_EVO_X)
         reserve_ovr_x.append(RESERVE_OVR_X)
         reserve_y.append(start_y - idx * step_y)
-        reserve_left_text.append(f"<b>{row['pos_group']}</b>  {reserve_name} {injury_badge} {reinforcement_badge}".strip())
+        reserve_left_text.append(f"<b>{row['pos_group']}</b>  {reserve_name} {injury_badge} {reinforcement_badge} {root_inherited_badge}".strip())
         reserve_evo_text.append(evo_badge)
         reserve_ovr_text.append(f"<b>{ovr_now}</b>")
         reserve_hover.append(
@@ -551,6 +738,8 @@ def build_pitch_figure(window_df: pd.DataFrame, selected_window: int, formation_
                     f"Position: {row['pos_group']}",
                     f"Status: {status_txt}",
                     f"OVR: {ovr_now} {evo_txt}".strip(),
+                    f"Chemistry: {chemistry_txt}",
+                    f"Salary: {salary_txt}",
                     _origin_text(row),
                     f"Market Value: {_money_millions(float(row['market_value']))}",
                 ]
@@ -1190,8 +1379,10 @@ def _format_profile_metric(metric: str, value: float) -> str:
         return "N/A"
     if metric in {"Média de OVR", "Idade Média"}:
         return f"{value:.1f}"
-    if metric in {"Potencial de Revenda", "Custo Salarial"}:
+    if metric == "Potencial de Revenda":
         return _money_millions(float(value))
+    if metric == "Custo Salarial":
+        return _money_thousands(float(value))
     if metric == "Entrosamento Total":
         return f"{int(round(value))}"
     return f"{value:.2f}"
@@ -1481,6 +1672,10 @@ def main() -> None:
 
     scheme = window_df["formation_scheme"].dropna().iloc[0] if "formation_scheme" in window_df and not window_df["formation_scheme"].dropna().empty else "N/A"
     finance = summarize_window_finance(window_df, budget, selected_window, selected_node)
+    sold_mask = pd.to_numeric(window_df.get("sold", 0), errors="coerce").fillna(0).astype(int) == 1
+    sold_players_df = window_df[sold_mask].copy()
+    current_payroll_eur = _compute_node_payroll_eur(window_df, squad_col="in_squad")
+    salary_cap_eur = _estimate_salary_cap_eur(decisions, is_stochastic)
     selected_sibling_node: int | None = None
 
     show_tree_sidebar = (
@@ -1499,7 +1694,6 @@ def main() -> None:
 
         with side_col:
             mini_tree_height = int(PITCH_FIG_HEIGHT * MINI_TREE_HEIGHT_RATIO)
-            lower_panel_height = max(160, PITCH_FIG_HEIGHT - mini_tree_height - 120)
             tree_fig = build_scenario_tree_figure(
                 prepared_tree_meta,
                 selected_node,
@@ -1531,13 +1725,55 @@ def main() -> None:
             except TypeError:
                 st.plotly_chart(tree_fig, width="stretch")
 
-            # st.subheader("Comparativo")
-            # st.caption("Radar do perfil agregado do time titular: nó atual vs nó irmão.")
+            col_saidas, col_financas = st.columns([1, 1], gap="medium")
 
-            sibling_ids = _get_sibling_node_ids(prepared_tree_meta, selected_node)
-            if sibling_ids:
-                siblings, sibling_options, sibling_option_ids, sibling_map = _build_sibling_choices(prepared_tree_meta, sibling_ids)
+            with col_saidas:
+                st.subheader("Saídas do Elenco")
+                if sold_players_df.empty:
+                    st.info("Sem vendas neste nó.")
+                else:
+                    sold_table = sold_players_df[["name", "pos_group", "ovr", "market_value", "wage"]].copy()
+                    sold_table = sold_table.rename(
+                        columns={
+                            "name": "Jogador",
+                            "pos_group": "Pos",
+                            "ovr": "OVR",
+                            "market_value": "Valor de Venda",
+                            "wage": "Salário",
+                        }
+                    )
+                    sold_table["Valor de Venda"] = pd.to_numeric(sold_table["Valor de Venda"], errors="coerce").fillna(0.0).apply(_money_millions)
+                    sold_table["Salário"] = pd.to_numeric(sold_table["Salário"], errors="coerce").fillna(0.0).apply(_money_thousands)
+                    st.dataframe(sold_table, width="stretch", hide_index=True)
 
+            with col_financas:
+                st.subheader("Status Financeiro")
+                st.metric("Orçamento de Transferência", _money_millions(finance["cash"]))
+                if salary_cap_eur is None:
+                    st.metric("Folha Salarial", _money_thousands(current_payroll_eur))
+                else:
+                    salary_slack_eur = salary_cap_eur - current_payroll_eur
+                    st.metric(
+                        "Folha Salarial",
+                        _money_thousands(current_payroll_eur),
+                        delta=f"{_money_thousands(salary_slack_eur)} vs teto",
+                    )
+
+        sibling_ids = _get_sibling_node_ids(prepared_tree_meta, selected_node)
+        siblings = pd.DataFrame()
+        sibling_options: list[str] = []
+        sibling_option_ids: list[int] = []
+        sibling_map: dict[str, int] = {}
+        sibling_df = pd.DataFrame()
+
+        if sibling_ids:
+            siblings, sibling_options, sibling_option_ids, sibling_map = _build_sibling_choices(prepared_tree_meta, sibling_ids)
+
+        col_radar, col_sibling = st.columns([1.5, 1], gap="large")
+
+        with col_sibling:
+            st.subheader("Sibling Comparison")
+            if sibling_ids and sibling_options:
                 sibling_state_key = f"selected_sibling_stage_{selected_window}_node_{selected_node}"
                 if sibling_state_key not in st.session_state or int(st.session_state[sibling_state_key]) not in sibling_option_ids:
                     st.session_state[sibling_state_key] = sibling_option_ids[0]
@@ -1564,6 +1800,17 @@ def main() -> None:
                 sibling_df = _with_post_decision_squad(sibling_df)
                 sibling_df = _with_display_best_xi(sibling_df, sibling_form)
 
+                diff_tbl = build_sibling_diff_table(window_df.copy(), sibling_df.copy())
+                if diff_tbl.empty:
+                    st.info("Sem diferenças de decisão entre os nós comparados.")
+                else:
+                    st.dataframe(_style_sibling_diff(diff_tbl), width="stretch", hide_index=True)
+            else:
+                st.info("Não há nó irmão disponível para comparação neste estágio.")
+
+        with col_radar:
+            st.subheader("Visualização de Radar")
+            if selected_sibling_node is not None and not sibling_df.empty:
                 scale_node_ids = (
                     stage_meta["node_id"].dropna().astype(int).tolist()
                     if not stage_meta.empty and "node_id" in stage_meta.columns
@@ -1576,20 +1823,19 @@ def main() -> None:
                     scale_node_ids,
                 )
 
-                radar_height = max(240, min(380, lower_panel_height - 120))
                 radar_fig, radar_tbl = build_squad_profile_radar(
                     window_df,
                     sibling_df,
                     selected_node,
                     selected_sibling_node,
-                    chart_height=radar_height,
+                    chart_height=320,
                     scale_bounds=scale_bounds,
                 )
                 st.plotly_chart(radar_fig, width="stretch")
-                st.caption("Escala normalizada de 0 a 100 por métrica para destacar trade-offs; valores absolutos na tabela abaixo.")
+                st.caption("Escala normalizada de 0 a 100 por métrica; tabela com valores absolutos.")
                 st.dataframe(radar_tbl, width="stretch", hide_index=True)
             else:
-                st.info("Não há nó irmão disponível para comparação neste estágio.")
+                st.info("Selecione um nó irmão para exibir o radar comparativo.")
     else:
         pitch_fig = build_pitch_figure(window_df, selected_window, scheme)
         st.plotly_chart(pitch_fig, width="stretch")
@@ -1628,42 +1874,6 @@ def main() -> None:
                 stage_nodes = prepared_tree_meta[prepared_tree_meta["stage"] == node_row.get("stage")][["node_id", "cumulative_probability"]].copy()
                 stage_nodes = stage_nodes.sort_values(by="cumulative_probability", ascending=False)
                 st.dataframe(stage_nodes, width="stretch", hide_index=True)
-
-            if {"parent_id", "stage"}.issubset(prepared_tree_meta.columns):
-                sibling_ids = _get_sibling_node_ids(prepared_tree_meta, selected_node)
-
-                if sibling_ids:
-                    siblings, sibling_options, sibling_option_ids, sibling_map = _build_sibling_choices(prepared_tree_meta, sibling_ids)
-                    st.subheader("Sibling Differences (Contingency Planning)")
-                    if selected_sibling_node is None:
-                        selected_sibling_label = st.selectbox(
-                            "Compare selected node against sibling",
-                            options=sibling_options,
-                            index=0,
-                        )
-                        sibling_node = int(sibling_map[selected_sibling_label])
-                    else:
-                        sibling_node = int(selected_sibling_node)
-                        sibling_row = siblings[siblings["node_id"] == sibling_node]
-                        if not sibling_row.empty:
-                            st.caption(f"Sibling under comparison: {_build_node_label(sibling_row.iloc[0])}")
-
-                    sibling_df = decisions[
-                        (decisions["window"] == selected_window)
-                        & (decisions["node_id"] == sibling_node)
-                    ].copy()
-
-                    selected_squad = window_df.copy()
-                    sibling_squad = sibling_df.copy()
-
-                    diff_tbl = build_sibling_diff_table(selected_squad, sibling_squad)
-                    if diff_tbl.empty:
-                        st.info("No decision-state differences between selected node and chosen sibling.")
-                    else:
-                        st.caption(
-                            "Green: bought/kept in selected branch | Red: sold/dispensed in selected branch"
-                        )
-                        st.dataframe(_style_sibling_diff(diff_tbl), width="stretch", hide_index=True)
 
     starters_tbl, reserves_tbl = build_window_tables(window_df)
 
