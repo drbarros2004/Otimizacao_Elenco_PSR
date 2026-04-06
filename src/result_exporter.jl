@@ -35,6 +35,40 @@ function _formation_positions_from_catalog(formation_catalog::Dict{String, Dict{
     return unique(sort(positions))
 end
 
+"""
+Computes the signing bonus in EUR, applying free-agent premium when transfer fee is low.
+"""
+function _compute_signing_cost_eur_exporter(
+    cost::Real,
+    wage::Real,
+    ovr::Real,
+    signing_bonus_rate::Real
+)
+    if cost < 100_000
+        multiplier = get_free_agent_signing_multiplier(Int(round(ovr)))
+        return Float64(wage) * 52 * Float64(signing_bonus_rate) * multiplier
+    end
+
+    return Float64(wage) * 52 * Float64(signing_bonus_rate)
+end
+
+"""
+Computes the signing bonus in EUR for stochastic node exports, applying free-agent premium when transfer fee is low.
+"""
+function _compute_signing_cost_eur_stochastic_exporter(
+    cost::Real,
+    wage::Real,
+    ovr::Real,
+    signing_bonus_rate::Real
+)
+    if cost < 100_000
+        multiplier = get_free_agent_signing_multiplier(Int(round(ovr)))
+        return Float64(wage) * 52 * Float64(signing_bonus_rate) * multiplier
+    end
+
+    return Float64(wage) * 52 * Float64(signing_bonus_rate)
+end
+
 function _extract_deterministic_compliance_results(model::Model, data::ModelData)
     T = data.windows
     formation_positions = _formation_positions_from_catalog(data.formation_catalog)
@@ -155,13 +189,14 @@ function _extract_stochastic_compliance_results(model::Model, data::ModelDataSto
 end
 
 """
-    extract_deterministic_results(model, data; ...)
+    extract_deterministic_results(model, data, params; ...)
 
 Builds deterministic result tables from solved model variables.
 """
 function extract_deterministic_results(
     model::Model,
-    data::ModelData;
+    data::ModelData,
+    params::ModelParameters;
     objective_value::Float64 = objective_value(model),
     solve_time::Float64 = 0.0,
     verbose::Bool = true
@@ -205,8 +240,22 @@ function extract_deterministic_results(
 
     budget_rows = []
     for t in T
-        spent = sum(data.cost_map[(j, t)] * round(Int, value(model[:buy][j, t])) for j in J)
-        sold = sum(data.value_map[(j, t)] * round(Int, value(model[:sell][j, t])) for j in J)
+        spent = sum(
+            (
+                (1 + params.transaction_cost_buy) * data.cost_map[(j, t)]
+                + _compute_signing_cost_eur_exporter(
+                    data.cost_map[(j, t)],
+                    data.wage_map[(j, t)],
+                    data.ovr_map[(j, t)],
+                    params.signing_bonus_rate
+                )
+            ) * round(Int, value(model[:buy][j, t]))
+            for j in J
+        )
+        sold = sum(
+            ((1 - params.transaction_cost_sell) * data.value_map[(j, t)]) * round(Int, value(model[:sell][j, t]))
+            for j in J
+        )
         buys = sum(round(Int, value(model[:buy][j, t])) for j in J)
         sells = sum(round(Int, value(model[:sell][j, t])) for j in J)
 
@@ -287,13 +336,14 @@ function tree_to_dataframe(data::ModelDataStochastic)
 end
 
 """
-    extract_stochastic_results(model, data; ...)
+    extract_stochastic_results(model, data, params; ...)
 
 Builds stochastic node-indexed result tables from solved model variables.
 """
 function extract_stochastic_results(
     model::Model,
-    data::ModelDataStochastic;
+    data::ModelDataStochastic,
+    params::ModelParameters;
     objective_value::Float64 = objective_value(model),
     solve_time::Float64 = 0.0,
     verbose::Bool = true
@@ -338,6 +388,7 @@ function extract_stochastic_results(
                 end
 
                 starter_allowed = data.starter_allowed_map[(j, n)]
+                chemistry_val = Float64(value(model[:chemistry][j, n]))
                 push!(decision_rows, (
                     node_id = n,
                     parent_id = parent_id,
@@ -356,6 +407,7 @@ function extract_stochastic_results(
                     bought_from_root = (!isnothing(parent) && parent::Int == data.tree.root_id && parent_buy == 1) ? 1 : 0,
                     starter_allowed = starter_allowed,
                     injured = starter_allowed == 1 ? 0 : 1,
+                    individual_chemistry = chemistry_val,
                     ovr = ovr_now,
                     ovr_prev = ovr_prev,
                     ovr_delta = ovr_now - ovr_prev,
@@ -373,8 +425,22 @@ function extract_stochastic_results(
         node = data.tree.nodes[n]
         parent = node.parent_id
         parent_id = isnothing(parent) ? missing : parent
-        spent = sum(data.cost_node_map[(j, n)] * round(Int, value(model[:buy][j, n])) for j in J)
-        sold = sum(data.value_node_map[(j, n)] * round(Int, value(model[:sell][j, n])) for j in J)
+        spent = sum(
+            (
+                (1 + params.transaction_cost_buy) * data.cost_node_map[(j, n)]
+                + _compute_signing_cost_eur_stochastic_exporter(
+                    data.cost_node_map[(j, n)],
+                    data.wage_node_map[(j, n)],
+                    data.ovr_node_map[(j, n)],
+                    params.signing_bonus_rate
+                )
+            ) * round(Int, value(model[:buy][j, n]))
+            for j in J
+        )
+        sold = sum(
+            ((1 - params.transaction_cost_sell) * data.value_node_map[(j, n)]) * round(Int, value(model[:sell][j, n]))
+            for j in J
+        )
         buys = sum(round(Int, value(model[:buy][j, n])) for j in J)
         sells = sum(round(Int, value(model[:sell][j, n])) for j in J)
         foreign_squad_count = sum(
