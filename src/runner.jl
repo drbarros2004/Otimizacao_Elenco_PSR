@@ -251,7 +251,15 @@ function run_optimization_stochastic(
     is_foreign_map_override::Union{Nothing,Dict{Int,Bool}} = nothing,
     domestic_nationalities::Vector{String} = ["Brazilian", "Brazil", "Brasil"],
     unknown_nationality_is_foreign::Bool = true,
-    nationality_fallback_to_league::Bool = true
+    nationality_fallback_to_league::Bool = true,
+    chemistry_affinity_nationalities::Vector{String} = String[
+        "Brazilian", "Brazil", "Brasil", "Brasileiro",
+        "Argentine", "Argentinian", "Argentina", "Argentino",
+        "Portuguese", "Portugal", "Português", "Portugues"
+    ],
+    chemistry_affinity_initial_chemistry::Float64 = 0.60,
+    chemistry_non_affinity_initial_chemistry::Float64 = 0.15,
+    chemistry_initial_squad_chemistry::Float64 = 1.0
 )
     println("\n" * "="^60)
     println("🌳 STOCHASTIC SQUAD OPTIMIZATION MODULE")
@@ -311,13 +319,34 @@ function run_optimization_stochastic(
         )
     end
 
+    initial_chemistry_map = build_initial_chemistry_map(
+        df,
+        initial_squad;
+        affinity_nationalities = chemistry_affinity_nationalities,
+        affinity_initial_chemistry = chemistry_affinity_initial_chemistry,
+        non_affinity_initial_chemistry = chemistry_non_affinity_initial_chemistry,
+        initial_squad_chemistry = chemistry_initial_squad_chemistry,
+    )
+
+    # Re-signings should use market onboarding chemistry (not root squad chemistry).
+    onboarding_chemistry_map = build_initial_chemistry_map(
+        df,
+        Int[];
+        affinity_nationalities = chemistry_affinity_nationalities,
+        affinity_initial_chemistry = chemistry_affinity_initial_chemistry,
+        non_affinity_initial_chemistry = chemistry_non_affinity_initial_chemistry,
+        initial_squad_chemistry = chemistry_initial_squad_chemistry,
+    )
+
     println("\n📊 Preparing stochastic optimization data...")
     stochastic_data = build_stochastic_model_data(
         df,
         stochastic_bundle,
         initial_squad,
         model_params.formation_catalog,
-        is_foreign_map
+        is_foreign_map,
+        initial_chemistry_map,
+        onboarding_chemistry_map
     )
 
     model = build_stochastic_squad_optimization_model(stochastic_data, model_params, verbose=true)
@@ -464,7 +493,11 @@ function main()
                     seasonal_revenue = exp_cfg.model_params.seasonal_revenue,
                     initial_squad_strategy = exp_cfg.initial_squad_strategy,
                     model_params_override = exp_cfg.model_params,
-                    is_foreign_map_override = is_foreign_map
+                    is_foreign_map_override = is_foreign_map,
+                    chemistry_affinity_nationalities = exp_cfg.chemistry_affinity_nationalities,
+                    chemistry_affinity_initial_chemistry = exp_cfg.chemistry_affinity_initial_chemistry,
+                    chemistry_non_affinity_initial_chemistry = exp_cfg.chemistry_non_affinity_initial_chemistry,
+                    chemistry_initial_squad_chemistry = exp_cfg.chemistry_initial_squad_chemistry,
                 )
             else
                 run_optimization(
