@@ -49,10 +49,6 @@ function build_stochastic_squad_optimization_model(
     J_foreign = [j for j in J if get(data.is_foreign_map, j, true)]
     verbose && println("  ├─ Foreign-player pool: $(length(J_foreign))")
 
-    # Chemistry pairs are kept based on initial squad for tractability.
-    pairs = generate_player_pairs(data.initial_squad)
-    verbose && println("  ├─ Chemistry pairs: $(length(pairs))")
-
     # ==== DECISION VARIABLES ====
     verbose && println("  ├─ Creating node-indexed decision variables...")
 
@@ -63,10 +59,10 @@ function build_stochastic_squad_optimization_model(
     @variable(model, budget[n in N] >= 0)
     @variable(model, budget_deficit[n in N] >= 0)
 
-    # Chemistry variables
-    @variable(model, ParElenco[(i,j) in pairs, n in N], Bin)
-    @variable(model, ParTitular[(i,j) in pairs, n in N], Bin)
-    @variable(model, 0 <= Quimica[(i,j) in pairs, n in N] <= S_MAX)
+    # Individual chemistry stock and tactical chemistry linearization
+    @variable(model, 0 <= chemistry[j in J, n in N] <= 1.0)
+    @variable(model, 0 <= tactical_chem[j in J, n in N] <= 1.0)
+    @variable(model, 0 <= chemistry_parent_flow[j in J, n in N] <= 1.0)
 
     # Soft constraint slacks
     @variable(model, slack_posicao[p in formation_positions, n in N] >= 0)
@@ -89,12 +85,9 @@ function build_stochastic_squad_optimization_model(
         end
     end
 
-    for (i, j) in pairs
-        if i in data.initial_squad && j in data.initial_squad
-            @constraint(model, Quimica[(i,j), root_id] == S_INICIAL)
-        else
-            @constraint(model, Quimica[(i,j), root_id] == 0)
-        end
+    for j in J
+        initial_chem_root = j in data.initial_squad ? get(data.initial_chemistry_map, j, 1.0) : 0.0
+        @constraint(model, chemistry[j, root_id] == initial_chem_root)
     end
 
     # ==== SQUAD FLOW (PARENT -> CHILD) ====
@@ -135,9 +128,9 @@ function build_stochastic_squad_optimization_model(
 
         signing_costs = AffExpr(0.0)
         for j in J
-            cost = data.cost_node_map[(j, n)]
-            wage = data.wage_node_map[(j, n)]
-            ovr = data.ovr_node_map[(j, n)]
+            cost = data.cost_node_map[(j, p)]
+            wage = data.wage_node_map[(j, p)]
+            ovr = data.ovr_node_map[(j, p)]
 
             signing_cost = _compute_signing_cost_eur_stochastic(
                 cost,
@@ -151,9 +144,9 @@ function build_stochastic_squad_optimization_model(
 
         @constraint(model,
             budget[n] == budget[p]
-                - sum(money_to_millions((1 + params.transaction_cost_buy) * data.cost_node_map[(j,n)]) * buy[j,p] for j in J)
+                - sum(money_to_millions((1 + params.transaction_cost_buy) * data.cost_node_map[(j,p)]) * buy[j,p] for j in J)
                 - signing_costs
-                + sum(money_to_millions((1 - params.transaction_cost_sell) * data.value_node_map[(j,n)]) * sell[j,p] for j in J)
+                + sum(money_to_millions((1 - params.transaction_cost_sell) * data.value_node_map[(j,p)]) * sell[j,p] for j in J)
                 + money_to_millions(revenue)
                 + budget_deficit[n]
         )
@@ -285,23 +278,15 @@ function build_stochastic_squad_optimization_model(
         end
     end
 
-    # ==== CHEMISTRY LINEARIZATION ====
-    verbose && println("  ├─ Chemistry linearization by node...")
+    # ==== INDIVIDUAL CHEMISTRY DYNAMICS (PARENT -> CHILD) ====
+    verbose && println("  ├─ Individual chemistry parent-child dynamics...")
 
-    for (i, j) in pairs, n in N
-        @constraint(model, ParElenco[(i,j), n] <= x[i, n])
-        @constraint(model, ParElenco[(i,j), n] <= x[j, n])
-        @constraint(model, ParElenco[(i,j), n] >= x[i,n] + x[j,n] - 1)
+    for j in J, n in N
+        @constraint(model, chemistry[j, n] <= x[j, n])
+        @constraint(model, tactical_chem[j, n] <= y[j, n])
+        @constraint(model, tactical_chem[j, n] <= chemistry[j, n])
+        @constraint(model, tactical_chem[j, n] >= chemistry[j, n] - (1 - y[j, n]))
 
-        @constraint(model, ParTitular[(i,j), n] <= y[i, n])
-        @constraint(model, ParTitular[(i,j), n] <= y[j, n])
-        @constraint(model, ParTitular[(i,j), n] >= y[i,n] + y[j,n] - 1)
-    end
-
-    # ==== CHEMISTRY DYNAMICS (PARENT -> CHILD) ====
-    verbose && println("  ├─ Chemistry parent-child dynamics...")
-
-    for (i, j) in pairs, n in N
         if n == root_id
             continue
         end
@@ -312,10 +297,39 @@ function build_stochastic_squad_optimization_model(
         end
         p = parent::Int
 
+        onboarding_chem = get(data.onboarding_chemistry_map, j, 0.15)
+        chemistry_multiplier = get(data.chemistry_multiplier_map, n, 1.0)
+        gain_multiplier = max(0.0, chemistry_multiplier)
+        gain_starter = gain_multiplier * params.chem_gain_starter
+        gain_reserve = gain_multiplier * params.chem_gain_reserve
+        max_parent_gain = max(gain_starter, gain_reserve)
+
+        if max_parent_gain > 1.0
+            gain_scale = 1.0 / max_parent_gain
+            gain_starter *= gain_scale
+            gain_reserve *= gain_scale
+            max_parent_gain = 1.0
+        end
+
+        stock_retention = clamp(1.0 - max(0.0, -chemistry_multiplier), 0.0, 1.0)
+        if stock_retention + max_parent_gain > 1.0
+            stock_retention = max(0.0, 1.0 - max_parent_gain)
+        end
+
+        chemistry_parent_rhs = stock_retention * chemistry[j, p]
+        chemistry_parent_rhs += gain_starter * y[j, p]
+        chemistry_parent_rhs += gain_reserve * (x[j, p] - y[j, p])
+        chemistry_parent_upper = 1.0
+
+        # Gate parent carry by ownership at child node to force zero chemistry after sale.
+        @constraint(model, chemistry_parent_flow[j, n] <= chemistry_parent_rhs)
         @constraint(model,
-            Quimica[(i,j), n] <= params.decay_quimica * Quimica[(i,j), p] 
-                                + params.bonus_titular * ParTitular[(i,j), n] 
-                                + params.bonus_elenco * (ParElenco[(i,j), n] - ParTitular[(i,j), n])
+            chemistry_parent_flow[j, n] >= chemistry_parent_rhs - chemistry_parent_upper * (1 - x[j, n])
+        )
+        @constraint(model, chemistry_parent_flow[j, n] <= x[j, n])
+
+        @constraint(model,
+            chemistry[j, n] == chemistry_parent_flow[j, n] + onboarding_chem * buy[j, p]
         )
     end
 
@@ -345,11 +359,11 @@ function build_stochastic_squad_optimization_model(
             )
             add_to_expression!(obj_terms, prob_n * params.peso_asset * score_mercado * x[j,n])
 
-            score_tatico = data.ovr_node_map[(j,n)] * 1.0
-            add_to_expression!(obj_terms, prob_n * params.peso_performance * score_tatico * y[j,n])
+            score_tatico = data.ovr_node_map[(j,n)]
+            add_to_expression!(obj_terms, prob_n * params.peso_performance * score_tatico * tactical_chem[j,n])
 
-            # Parent decisions are executed on the edge p -> n, so friction must penalize buy[j,p].
-            add_to_expression!(obj_terms, -prob_n * params.friction_penalty * buy[j,p])
+            # # Parent decisions are executed on the edge p -> n, so friction must penalize buy[j,p].
+            # add_to_expression!(obj_terms, -prob_n * params.friction_penalty * buy[j,p])
         end
 
         for p in formation_positions
@@ -361,30 +375,6 @@ function build_stochastic_squad_optimization_model(
         add_to_expression!(obj_terms, -prob_n * P_CAIXA * budget_deficit[n])
     end
 
-    for n in non_root_nodes
-        prob_n = data.tree.nodes[n].cumulative_probability
-        if prob_n <= 0.0
-            continue
-        end
-
-        chemistry_multiplier = get(data.chemistry_multiplier_map, n, 1.0)
-        for (i, j) in pairs
-            add_to_expression!(obj_terms, prob_n * params.bonus_entrosamento * chemistry_multiplier * Quimica[(i,j), n])
-        end
-    end
-
-    # Terminal value is only accounted for leaf nodes, weighted by cumulative probability.
-    for n in data.tree.leaf_nodes
-        prob_n = data.tree.nodes[n].cumulative_probability
-        if prob_n <= 0.0
-            continue
-        end
-
-        valor_elenco_final_million = sum(money_to_millions(data.value_node_map[(j, n)]) * x[j, n] for j in J)
-        add_to_expression!(obj_terms, prob_n * 0.001 * valor_elenco_final_million)
-        add_to_expression!(obj_terms, prob_n * params.risk_appetite * budget[n])
-    end
-
     @objective(model, Max, obj_terms)
 
     verbose && println("  └─ ✅ Stochastic model construction complete!")
@@ -392,7 +382,7 @@ function build_stochastic_squad_optimization_model(
     verbose && println("    • Players: $(length(J))")
     verbose && println("    • Nodes: $(length(N))")
     verbose && println("    • Leaf nodes: $(length(data.tree.leaf_nodes))")
-    verbose && println("    • Chemistry Pairs: $(length(pairs))")
+    verbose && println("    • Individual chemistry variables: $(length(J) * length(N))")
     verbose && println("    • Variables: $(num_variables(model))")
     verbose && println("    • Constraints: $(num_constraints(model; count_variable_in_set_constraints=false))")
 
@@ -421,7 +411,8 @@ function solve_stochastic_model(
 
     return extract_stochastic_results(
         model,
-        data;
+        data,
+        params;
         objective_value=summary.objective_value,
         solve_time=summary.solve_time,
         verbose=verbose
