@@ -49,8 +49,8 @@ end
 """
     extract_nationality_from_description(description_text) -> Union{Nothing, String}
 
-Extracts nationality from SoFIFA prose such as:
-"... is a Brazilian footballer ..." or "... is an Argentine footballer ..."
+Extracts nationality as the single token immediately before "footballer"
+in SoFIFA prose, e.g. "... is a Brazilian footballer ...".
 """
 function extract_nationality_from_description(description_text)::Union{Nothing, String}
     if ismissing(description_text)
@@ -62,7 +62,7 @@ function extract_nationality_from_description(description_text)::Union{Nothing, 
         return nothing
     end
 
-    match_obj = match(r"(?i)\bis an? ([\p{L}][\p{L} .'-]*?) footballer\b", text)
+    match_obj = match(r"(?i)\b(?!an?\b)([\p{L}][\p{L}'-]*)\s+footballer\b", text)
     if isnothing(match_obj)
         return nothing
     end
@@ -276,4 +276,85 @@ function build_is_foreign_map(
     end
 
     return is_foreign_map
+end
+
+"""
+    build_initial_chemistry_map(df_players, initial_squad; ...)
+
+Builds player-level initial chemistry scores used when a player first joins the club.
+
+Rules:
+- Initial squad players always start at `initial_squad_chemistry`.
+- Non-initial players with affinity nationalities start at `affinity_initial_chemistry`.
+- Remaining non-initial players start at `non_affinity_initial_chemistry`.
+"""
+function build_initial_chemistry_map(
+    df_players::DataFrame,
+    initial_squad::Vector{Int};
+    affinity_nationalities::Vector{String} = String[
+        "Brazilian", "Brazil", "Brasil", "Brasileiro",
+        "Argentine", "Argentinian", "Argentina", "Argentino",
+        "Portuguese", "Portugal", "Português", "Portugues"
+    ],
+    affinity_initial_chemistry::Float64 = 0.60,
+    non_affinity_initial_chemistry::Float64 = 0.15,
+    initial_squad_chemistry::Float64 = 1.0,
+)
+    cols = Set(Symbol.(names(df_players)))
+    if !(:player_id in cols)
+        error("Cannot build initial chemistry map: missing required column 'player_id'.")
+    end
+
+    if affinity_initial_chemistry < 0.0 || affinity_initial_chemistry > 1.0
+        error("affinity_initial_chemistry must be in [0, 1].")
+    end
+    if non_affinity_initial_chemistry < 0.0 || non_affinity_initial_chemistry > 1.0
+        error("non_affinity_initial_chemistry must be in [0, 1].")
+    end
+    if initial_squad_chemistry < 0.0 || initial_squad_chemistry > 1.0
+        error("initial_squad_chemistry must be in [0, 1].")
+    end
+
+    has_country = :country_name in cols
+    has_description = :description in cols
+
+    affinity_norm = Set{String}()
+    for item in affinity_nationalities
+        token = _normalize_nationality_token(item)
+        if !isempty(token)
+            push!(affinity_norm, token)
+        end
+    end
+
+    initial_squad_set = Set(Int.(initial_squad))
+    chemistry_map = Dict{Int, Float64}()
+
+    for row in eachrow(df_players)
+        player_id = Int(row.player_id)
+
+        if player_id in initial_squad_set
+            chemistry_map[player_id] = initial_squad_chemistry
+            continue
+        end
+
+        nationality_norm = ""
+        if has_description
+            parsed_nationality = extract_nationality_from_description(row.description)
+            if !isnothing(parsed_nationality)
+                nationality_norm = _normalize_nationality_token(parsed_nationality)
+            end
+        end
+
+        if isempty(nationality_norm) && has_country && !ismissing(row.country_name)
+            nationality_norm = _normalize_nationality_token(row.country_name)
+        end
+
+        chemistry_map[player_id] = if !isempty(nationality_norm) && (nationality_norm in affinity_norm)
+            affinity_initial_chemistry
+        else
+            non_affinity_initial_chemistry
+        end
+    end
+
+    return chemistry_map
 end
