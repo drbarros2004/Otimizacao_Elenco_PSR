@@ -1,6 +1,6 @@
 [simulation]
 # Number of transfer windows to simulate (2 windows ~= 1 season)
-num_windows = 3
+num_windows = 2
 # Candidate pruning for faster optimization (0 disables).
 top_k_players_per_position = 600
 
@@ -15,19 +15,20 @@ initial_squad_strategy = "team:Flamengo"
 max_squad_size = 30
 min_squad_size = 18
 friction_penalty = 0.0 # estava em 10, agora está em -500 e não deu muita diferença. ver se isso é realmente necessário
-transaction_cost_buy = 0.15
-transaction_cost_sell = 0.12
+transaction_cost_buy = 0.20
+transaction_cost_sell = 0.15
 signing_bonus_rate = 0.5
 # Soft salary-cap controls based on initial squad payroll
-salary_cap_multiplier_initial = 1.0 # qual a diferença entre o multiplier e o window factor
-salary_cap_penalty = 500.0
+salary_cap_multiplier_initial = 1.15
+salary_cap_penalty = 1500.0
+
 foreign_limit = 9
 foreign_violation_penalty = 20000
 domestic_nationalities = ["Brazilian", "Brazil", "Brasil"]
 unknown_nationality_is_foreign = true
 nationality_fallback_to_league = false
 
-squad_position_penalty = 40000.0 # Penalidade suave (menor que o salário)
+squad_position_penalty = 400.0 # Penalidade suave (menor que o salário)
 
 [bench_targets]
 GK = 2 # Dois goleiros reservas, logo 3 GKs no total no elenco
@@ -37,7 +38,7 @@ LB = 1
 CM = 4
 RW = 1
 LW = 1
-ST = 1
+ST = 2
 
 # Exact starters by position for each tactical scheme
 [formation_catalog.433]
@@ -75,18 +76,23 @@ ST = 2
 window_0 = "433"
 window_1 = "433"
 window_2 = "442"
-window_3 = "442"
 
 [objective]
 weight_quality = 0.7
-weight_potential = 0.3
-decay_quimica = 0.5
-bonus_titular = 6
-bonus_elenco = 3
-peso_asset = 600.0 
-peso_performance = 2000.0 
-bonus_entrosamento = 100.0
-risk_appetite = 0.001
+weight_potential = 2.0 # it has to be bigger than weight quality because it opperates in a minor scale
+chem_gain_starter = 0.08
+chem_gain_reserve = 0.04
+peso_asset = 1.0 
+peso_performance = 50.0 
+risk_appetite = -0.01
+
+[chemistry]
+affinity_nationalities = [
+	"Brazilian", "Argentine", "Chilean", "Uruguayan"
+]
+affinity_initial_chemistry = 0.10
+non_affinity_initial_chemistry = 0.04
+initial_squad_chemistry = 1.0
 
 # TODO: Transformar o root transactions a única forma como o modelo opera. Melhorar como isso é feito no dashboard.
 
@@ -95,99 +101,52 @@ risk_appetite = 0.001
 enabled = true
 allow_root_transactions = true
 ovr_shock_sigma = 0.06 # standard deviation of the shock applied to OVR 
-value_shock_sigma = 0.12 # standard deviation of the shock applied to market value 
-chemistry_conflict_probability = 0.10 # risk of conflicts that can penalize team chemistry
+value_shock_sigma = 0.02 # standard deviation of the shock applied to market value 
+chemistry_conflict_probability = 0.02 # probability of random chemistry conflict in each non-root node
 injury_probability = 0.08
 
 [scenario_tree]
-# One branching factor per stage transition: stage 0->1, 1->2, ..., (W-1)->W.
-# Length must match simulation.num_windows.
-branching_by_stage = [2, 2, 2]
+# Define a estrutura: Raiz -> 2 Filhos -> 4 Netos (Total 7 nós)
+branching_by_stage = [2, 2]
 
 [scenario_tree.stage_probabilities]
-# Optional; defaults to uniform if omitted.
-stage_1 = [0.60, 0.40]
-stage_2 = [0.50, 0.50]
-stage_3 = [0.55, 0.45]
+stage_1 = [0.60, 0.40] # Probabilidade de Sucesso vs. Instabilidade
+stage_2 = [0.50, 0.50] # Probabilidade uniforme para os desfechos finais
 
-# Optional hybrid mode: manual events by node.
-# Key format must be node_<id> (e.g., node_3).
-# Supported fields:
-# - label (string): scenario business description shown in dashboards.
-# - tactical_override (string): must exist in [formation_catalog].
-# - injury_overrides (array): player names or player_ids forced as unavailable in that node.
-# - forced_sell_overrides (array): player names or player_ids forced to be sold in that node.
-# - market_shock (float): additive branch market shock applied to value dynamics.
-# - chemistry_bonus (float): overrides chemistry multiplier for that node
-
-# --- ESTÁGIO 0 (O PRESENTE) ---
+# --- ESTÁGIO 0: PLANEJAMENTO (JANEIRO) ---
 [scenario_tree.manual_events.node_1]
-label = "Estado Inicial (Flamengo 2026)"
+label = "Janeiro: Planejamento Estratégico"
 
-# --- ESTÁGIO 1 (JANELA DE INVERNO) ---
+# --- ESTÁGIO 1: MEIO DA TEMPORADA (JULHO) - A INCERTEZA DO COMANDO ---
+
+# Ramo A: Continuidade
 [scenario_tree.manual_events.node_2]
-label = "Sucesso e Assédio Europeu"
-# Simula a saída forçada do principal ativo por multa rescisória (Venda Forçada)
-forced_sell_overrides = ["Pedro Guilherme Abreu dos Santos"]
-chemistry_bonus = 1.1
-market_shock = 0.05
+label = "Julho: Técnico Mantido (Sucesso e assédio)"
+tactical_override = "433"
 
+# Ramo B: Troca de Comando
 [scenario_tree.manual_events.node_3]
-label = "Instabilidade Técnica (Troca de Técnico)"
-# Mudança para esquema 5-3-2 exige zagueiros extras e pune a química temporariamente
+label = "Julho: Troca de Técnico (Mudança para 5-3-2)"
 tactical_override = "532"
-chemistry_bonus = 0.85
-injury_overrides = ["Giorgian de Arrascaeta"]
-market_shock = -0.05
+injury_overrides = ["Agustín Rossi", "Leonardo Pereira"]
 
-# --- ESTÁGIO 2 (JANELA DE VERÃO - MEIO DA TEMPORADA) ---
+# --- ESTÁGIO 2: DESFECHO DA TEMPORADA (DEZEMBRO) - O TESTE DE RESILIÊNCIA ---
 
-# Ramos do Sucesso (Nó 2)
+# Desfechos a partir do N2 (Técnico Mantido)
 [scenario_tree.manual_events.node_4]
-label = "Manutenção da Hegemonia"
-# Cenário de calmaria técnica, foca em valorização orgânica
-chemistry_bonus = 1.15
-market_shock = 0.10
+label = "Dezembro: Reta final sem sustos"
+# Sem modificadores
 
 [scenario_tree.manual_events.node_5]
-label = "Venda de Jóia da Base"
-# O modelo perde Lorran por venda forçada, forçando reposição no mercado
-forced_sell_overrides = ["Wallace Yan de Souza Barreto"]
-injury_overrides = ["Vitor Eduardo da Silva Matos"] # Lesão moderada
-market_shock = 0.05
+label = "Dezembro: Lesão do Goleiro Titular"
+injury_overrides = ["Agustín Rossi"]
 
-# Ramos da Instabilidade (Nó 3)
+# Desfechos a partir do N3 (Novo Técnico / 5-3-2)
 [scenario_tree.manual_events.node_6]
-label = "Choque de Gestão (Recuperação)"
-# Volta ao 4-3-3 clássico, mercado reage bem à nova diretoria
-tactical_override = "433"
-market_shock = 0.15
-chemistry_bonus = 1.1
+label = "Dezembro: Reta final sem sustos"
+# Sem modificadores
 
 [scenario_tree.manual_events.node_7]
-label = "Crise no DM: Teste de Capacidade Efetiva"
-# Cenário de impacto severo: lesão do goleiro titular e do capitão
-# Testa se o modelo contratou reservas suficientes nas etapas anteriores
-injury_overrides = ["Agustín Rossi", "Jorge Luiz Frello Filho"]
-market_shock = -0.15
-chemistry_bonus = 0.7
-
-# --- ESTÁGIO 3 (NÓS FOLHA - RESULTADOS FINAIS) ---
-
-# Exemplo de um desastre total para Stress Test (Filho do Nó 7)
-[scenario_tree.manual_events.node_15]
-label = "Colapso Técnico (Stress Test Final)"
-# Perda de múltiplos titulares. Se a capacidade efetiva cair abaixo do mínimo, 
-# o solver mostrará inviabilidade ou penalidades massivas.
-injury_overrides = [
-    "Agustín Rossi", "Leonardo Rech Ortiz", "Nicolás de la Cruz", 
-    "Jorge Luiz Frello Filho", "Éverton Sousa Soares"
-]
-market_shock = -0.30
-chemistry_bonus = 0.5
-
-# Exemplo de glória total (Filho do Nó 4)
-[scenario_tree.manual_events.node_8]
-label = "Valorização Máxima do Elenco"
-market_shock = 0.25
-chemistry_bonus = 1.3
+label = "Dezembro: Lesões no setor defensivo"
+injury_overrides = ["Leonardo Pereira"] 
+# Ou Léo Ortiz, dependendo de como está o nome na base
