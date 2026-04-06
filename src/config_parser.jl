@@ -7,6 +7,10 @@ struct ExperimentConfig
     domestic_nationalities::Vector{String}
     unknown_nationality_is_foreign::Bool
     nationality_fallback_to_league::Bool
+    chemistry_affinity_nationalities::Vector{String}
+    chemistry_affinity_initial_chemistry::Float64
+    chemistry_non_affinity_initial_chemistry::Float64
+    chemistry_initial_squad_chemistry::Float64
     model_params::ModelParameters
     stochastic_config::StochasticConfig
     scenario_tree::Union{Nothing, ScenarioTree}
@@ -447,6 +451,7 @@ function load_experiment_config(config_path::String=DEFAULT_EXPERIMENT_CONFIG_PA
     opt_cfg = get(cfg, "optimization", Dict{String,Any}())
     constraints_cfg = get(cfg, "constraints", Dict{String,Any}())
     objective_cfg = get(cfg, "objective", Dict{String,Any}())
+    chemistry_cfg = get(cfg, "chemistry", Dict{String,Any}())
 
     num_windows = Int(get(sim_cfg, "num_windows", 4))
     if num_windows < 1
@@ -501,6 +506,48 @@ function load_experiment_config(config_path::String=DEFAULT_EXPERIMENT_CONFIG_PA
         error("constraints.domestic_nationalities must define at least one non-empty value.")
     end
 
+    raw_affinity_nationalities = get(
+        chemistry_cfg,
+        "affinity_nationalities",
+        Any[
+            "Brazilian", "Brazil", "Brasil", "Brasileiro",
+            "Argentine", "Argentinian", "Argentina", "Argentino",
+            "Portuguese", "Portugal", "Português", "Portugues"
+        ]
+    )
+    chemistry_affinity_nationalities = String[]
+    if raw_affinity_nationalities isa AbstractVector
+        for item in raw_affinity_nationalities
+            token = strip(String(item))
+            if !isempty(token)
+                push!(chemistry_affinity_nationalities, token)
+            end
+        end
+    else
+        token = strip(String(raw_affinity_nationalities))
+        if !isempty(token)
+            push!(chemistry_affinity_nationalities, token)
+        end
+    end
+
+    if isempty(chemistry_affinity_nationalities)
+        error("chemistry.affinity_nationalities must define at least one non-empty value.")
+    end
+
+    chemistry_affinity_initial_chemistry = Float64(get(chemistry_cfg, "affinity_initial_chemistry", 0.60))
+    chemistry_non_affinity_initial_chemistry = Float64(get(chemistry_cfg, "non_affinity_initial_chemistry", 0.15))
+    chemistry_initial_squad_chemistry = Float64(get(chemistry_cfg, "initial_squad_chemistry", 1.0))
+
+    if chemistry_affinity_initial_chemistry < 0.0 || chemistry_affinity_initial_chemistry > 1.0
+        error("chemistry.affinity_initial_chemistry must be in [0,1].")
+    end
+    if chemistry_non_affinity_initial_chemistry < 0.0 || chemistry_non_affinity_initial_chemistry > 1.0
+        error("chemistry.non_affinity_initial_chemistry must be in [0,1].")
+    end
+    if chemistry_initial_squad_chemistry < 0.0 || chemistry_initial_squad_chemistry > 1.0
+        error("chemistry.initial_squad_chemistry must be in [0,1].")
+    end
+
     if min_squad_size > max_squad_size
         error("constraints.min_squad_size cannot be greater than constraints.max_squad_size.")
     end
@@ -534,10 +581,19 @@ function load_experiment_config(config_path::String=DEFAULT_EXPERIMENT_CONFIG_PA
     decay_quimica = Float64(get(objective_cfg, "decay_quimica", 0.70))
     bonus_titular = Float64(get(objective_cfg, "bonus_titular", 4.0)) # Aumentamos devido ao baixo peso base
     bonus_elenco = Float64(get(objective_cfg, "bonus_elenco", 2.5))   # Aumentamos devido ao baixo peso base
+    chem_gain_starter = Float64(get(objective_cfg, "chem_gain_starter", 0.15))
+    chem_gain_reserve = Float64(get(objective_cfg, "chem_gain_reserve", 0.05))
     peso_asset = Float64(get(objective_cfg, "peso_asset", 0.2))
     peso_performance = Float64(get(objective_cfg, "peso_performance", 1.0))
     bonus_entrosamento = Float64(get(objective_cfg, "bonus_entrosamento", 5.0)) # Dobramos o peso no objetivo global
     risk_appetite = Float64(get(objective_cfg, "risk_appetite", 1.0))
+
+    if chem_gain_starter < 0.0 || chem_gain_starter > 1.0
+        error("objective.chem_gain_starter must be in [0,1].")
+    end
+    if chem_gain_reserve < 0.0 || chem_gain_reserve > 1.0
+        error("objective.chem_gain_reserve must be in [0,1].")
+    end
 
     model_params = ModelParameters(
         initial_budget = initial_budget,
@@ -561,6 +617,8 @@ function load_experiment_config(config_path::String=DEFAULT_EXPERIMENT_CONFIG_PA
         decay_quimica = decay_quimica,
         bonus_titular = bonus_titular,
         bonus_elenco = bonus_elenco,
+        chem_gain_starter = chem_gain_starter,
+        chem_gain_reserve = chem_gain_reserve,
         peso_asset = peso_asset,
         peso_performance = peso_performance,
         bonus_entrosamento = bonus_entrosamento,
@@ -583,6 +641,7 @@ function load_experiment_config(config_path::String=DEFAULT_EXPERIMENT_CONFIG_PA
     println("   Salary cap multiplier (initial payroll): x$(round(salary_cap_multiplier_initial, digits=2)) | penalty: $(round(salary_cap_penalty, digits=1))")
     println("   Foreign-player rule: limit $(foreign_limit) | soft excess penalty $(round(foreign_violation_penalty, digits=3))")
     println("   Domestic nationalities: $(domestic_nationalities) | unknown->foreign: $(unknown_nationality_is_foreign) | league fallback: $(nationality_fallback_to_league)")
+    println("   Chemistry onboarding: affinity=$(chemistry_affinity_initial_chemistry), non-affinity=$(chemistry_non_affinity_initial_chemistry), initial-squad=$(chemistry_initial_squad_chemistry)")
     println("   Squad position penalty: $(round(squad_position_penalty, digits=1)) | Bench targets: $(bench_targets)")
 
     if stochastic_config.enabled && !isnothing(scenario_tree)
@@ -602,6 +661,10 @@ function load_experiment_config(config_path::String=DEFAULT_EXPERIMENT_CONFIG_PA
         domestic_nationalities,
         unknown_nationality_is_foreign,
         nationality_fallback_to_league,
+        chemistry_affinity_nationalities,
+        chemistry_affinity_initial_chemistry,
+        chemistry_non_affinity_initial_chemistry,
+        chemistry_initial_squad_chemistry,
         model_params,
         stochastic_config,
         scenario_tree
