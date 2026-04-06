@@ -12,12 +12,12 @@ EXACT translation of Python/PuLP model including:
 
 using JuMP, Gurobi, DataFrames, CSV
 
-# Declaring constants
+# Declaring constants (these ones are only useful for the deterministic model because chemistry wasn't updated)
 const S_MAX = 20.0         
 const S_INICIAL = 5.0      
 
 const P_SALARIO = 500.0
-const P_CAIXA = 3000.0
+const P_CAIXA = 3000.0 # add this to the experiment.toml
 
 # Monetary normalization used inside optimization models.
 # Internal model unit is million EUR to improve numerical conditioning.
@@ -54,6 +54,8 @@ struct ModelDataStochastic
     sell_allowed_map::Dict{Tuple{Int, Int}, Int}
     forced_sell_node_map::Dict{Tuple{Int, Int}, Int}
     chemistry_multiplier_map::Dict{Int, Float64}
+    initial_chemistry_map::Dict{Int, Float64}
+    onboarding_chemistry_map::Dict{Int, Float64}
     position_requirements_map::Dict{Tuple{String, Int}, Int}
     allow_root_transactions::Bool
     initial_squad::Vector{Int}
@@ -87,6 +89,8 @@ struct ModelParameters
     risk_appetite::Float64
     bonus_titular::Float64
     bonus_elenco::Float64
+    chem_gain_starter::Float64
+    chem_gain_reserve::Float64
 
     function ModelParameters(;
         initial_budget::Float64 = 100e6,
@@ -124,7 +128,9 @@ struct ModelParameters
         bonus_entrosamento::Float64 = 2.0,
         risk_appetite::Float64 = 1.0,
         bonus_titular::Float64 = 3.0,
-        bonus_elenco::Float64 = 2.0
+        bonus_elenco::Float64 = 2.0,
+        chem_gain_starter::Float64 = 0.15,
+        chem_gain_reserve::Float64 = 0.05
     )
         new(initial_budget, seasonal_revenue, max_squad_size, min_squad_size,
             friction_penalty, transaction_cost_buy, transaction_cost_sell, signing_bonus_rate,
@@ -133,7 +139,8 @@ struct ModelParameters
             formation_catalog, formation_by_window, bench_targets, squad_position_penalty,
             weight_quality, weight_potential, decay_quimica,
             peso_asset, peso_performance, bonus_entrosamento, risk_appetite,
-            bonus_titular, bonus_elenco)
+            bonus_titular, bonus_elenco,
+            chem_gain_starter, chem_gain_reserve)
     end
 end
 
@@ -192,7 +199,9 @@ function build_stochastic_model_data(
     stochastic_bundle,
     initial_squad::Vector{Int},
     formation_catalog::Dict{String, Dict{String, Int}},
-    is_foreign_map::Dict{Int, Bool}
+    is_foreign_map::Dict{Int, Bool},
+    initial_chemistry_map::Dict{Int, Float64},
+    onboarding_chemistry_map::Dict{Int, Float64}
 )
     tree = stochastic_bundle.tree
     node_ids = sort(collect(keys(tree.nodes)))
@@ -215,6 +224,8 @@ function build_stochastic_model_data(
         stochastic_bundle.sell_allowed_map,
         stochastic_bundle.forced_sell_node_map,
         stochastic_bundle.chemistry_multiplier_map,
+        initial_chemistry_map,
+        onboarding_chemistry_map,
         stochastic_bundle.position_requirements_map,
         stochastic_bundle.allow_root_transactions,
         initial_squad,
@@ -303,6 +314,20 @@ function assert_stochastic_data_contract(data::ModelDataStochastic)
             end
             if !haskey(data.is_foreign_map, p_id)
                 error("Missing is_foreign_map entry for player $p_id.")
+            end
+            if !haskey(data.initial_chemistry_map, p_id)
+                error("Missing initial_chemistry_map entry for player $p_id.")
+            end
+            initial_chem = data.initial_chemistry_map[p_id]
+            if initial_chem < 0.0 || initial_chem > 1.0
+                error("initial_chemistry_map must be in [0,1]. Found $initial_chem for player $p_id.")
+            end
+            if !haskey(data.onboarding_chemistry_map, p_id)
+                error("Missing onboarding_chemistry_map entry for player $p_id.")
+            end
+            onboarding_chem = data.onboarding_chemistry_map[p_id]
+            if onboarding_chem < 0.0 || onboarding_chem > 1.0
+                error("onboarding_chemistry_map must be in [0,1]. Found $onboarding_chem for player $p_id.")
             end
 
             forced_sell = data.forced_sell_node_map[(p_id, node_id)]
